@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>住哪儿 V2｜Apple 风格版</title>
+<link rel="stylesheet" href="styles-v2.css">
+</head>
+<body>
+
+<!-- 顶部细条（步骤页与结果页显示） -->
+<header class="topbar hidden" id="topbar">
+  <div class="topbar-inner">
+    <div class="brand-mini"><span class="brand-dot">住</span> 住哪儿</div>
+    <nav class="progress" id="progress">
+      <button class="prog-item" data-goto="step1"><i>01</i> 通勤与底线</button>
+      <span class="prog-sep"></span>
+      <button class="prog-item" data-goto="step2"><i>02</i> 房源与地图</button>
+      <span class="prog-sep"></span>
+      <button class="prog-item" data-goto="step3"><i>03</i> 我的偏好</button>
+      <span class="prog-sep"></span>
+      <button class="prog-item" data-goto="result"><i>04</i> 选房报告</button>
+    </nav>
+    <div class="demo-badge">Demo 模拟数据</div>
+  </div>
+</header>
+
+<main id="app">
+
+  <!-- ============ 欢迎页 ============ -->
+  <section class="view view-welcome active" id="view-welcome">
+    <div class="welcome-inner">
+      <div class="welcome-text">
+        <div class="welcome-kicker">住哪儿 · 智能房源对比决策</div>
+        <h1>别再凭感觉选房。<br><span class="hl">让每一次出发，<br>都更接近你想要的生活。</span></h1>
+        <p class="welcome-sub">比较通勤、预算、生活便利和你的真实偏好，<br>找到真正适合你的房子。</p>
+        <button class="btn-hero" id="startBtn">开始比较 →</button>
+        <div class="welcome-values">
+          <div><b>可解释</b><span>每个分数都有依据</span></div>
+          <div><b>有底线</b><span>硬伤不被优点掩盖</span></div>
+          <div><b>重可靠</b><span>用保守通勤算出发</span></div>
+        </div>
+      </div>
+      <div class="welcome-visual" aria-hidden="true">
+        <svg viewBox="0 0 520 560" class="welcome-svg">
+          <!-- 抽象城市道路纹理 -->
+          <g stroke="#1E3A35" stroke-width="1.5" fill="none">
+            <path d="M40 80 H480 M40 200 H480 M40 320 H480 M40 440 H480"/>
+            <path d="M110 40 V520 M240 40 V520 M370 40 V520"/>
+            <path d="M40 500 Q200 420 260 300 T480 120" stroke="#274B43" stroke-width="2"/>
+          </g>
+          <!-- 发光通勤路线 -->
+          <path d="M140 420 Q240 380 300 300 T400 140" fill="none" stroke="#2E8B72" stroke-width="3" stroke-linecap="round" class="glow-route"/>
+          <circle cx="300" cy="300" r="5" fill="#C9A66B"/>
+          <!-- 家 / 公司 -->
+          <circle cx="140" cy="420" r="10" fill="#2E8B72"/>
+          <circle cx="140" cy="420" r="18" fill="none" stroke="#2E8B72" opacity=".4"/>
+          <rect x="388" y="118" width="24" height="24" rx="6" fill="#C9A66B"/>
+          <!-- 房源光点 -->
+          <circle cx="200" cy="180" r="6" fill="#5B7FB8" opacity=".8"/>
+          <circle cx="350" cy="450" r="6" fill="#8A6BB8" opacity=".8"/>
+        </svg>
+        <div class="float-chip fc1">🚇 保守通勤 42 分钟</div>
+        <div class="float-chip fc2">🛒 盒马 0.8 km</div>
+        <div class="float-chip fc3">⏰ 最晚 08:06 出发</div>
+      </div>
+    </div>
+    <p class="welcome-note">本 Demo 全部使用模拟数据，不构成任何房产、教育或入学承诺。</p>
+  </section>
+
+  <!-- ============ 第 1 步：通勤与底线 ============ -->
+  <section class="view" id="view-step1">
+    <div class="step-inner">
+      <div class="step-head">
+        <div class="step-no">第 1 步 · 通勤与底线</div>
+        <h2>先告诉我：什么条件不能妥协？</h2>
+        <p class="step-sub">「必须满足」会成为硬约束；即使其他方面很好，不符合底线的房源也不会被优先推荐。</p>
+      </div>
+
+      <div class="block">
+        <div class="block-title">你的工作日</div>
+        <div class="big-fields">
+          <div class="field">
+            <label for="companyInput">公司地址</label>
+            <input type="text" id="companyInput" class="input-lg" value="上海陆家嘴金融中心">
+          </div>
+          <div class="field">
+            <label for="arriveTime">目标到达时间（工作日）</label>
+            <input type="time" id="arriveTime" class="input-lg" value="09:00">
+          </div>
+          <div class="field">
+            <label>偏好出行方式</label>
+            <div class="capsules" id="prefTransportCaps">
+              <button class="capsule active" data-pt="mix">不限</button>
+              <button class="capsule" data-pt="transit">🚇 地铁/公交</button>
+              <button class="capsule" data-pt="drive">🚗 驾车</button>
+              <button class="capsule" data-pt="bike">🚲 骑行</button>
+              <button class="capsule" data-pt="walk">🚶 步行</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="block">
+        <div class="block-title">你的不可妥协条件</div>
+        <div class="constraint-grid" id="constraintGrid"></div>
+      </div>
+
+      <div class="bottomline-bar hidden" id="bottomlineBar">
+        <span class="bl-label">你的底线摘要</span>
+        <span id="bottomlineText"></span>
+      </div>
+
+      <div class="step-nav">
+        <button class="btn-back" data-goto="welcome">← 返回</button>
+        <button class="btn-next" data-goto="step2">下一步：添加房源 →</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 第 2 步：房源与地图 ============ -->
+  <section class="view" id="view-step2">
+    <div class="step-inner wide">
+      <div class="step-head">
+        <div class="step-no">第 2 步 · 房源与地图</div>
+        <h2>添加候选房源，看看每天怎么走</h2>
+        <p class="step-sub">支持 2–5 套房源，已预置 3 套上海示例。点击卡片或地图图钉可切换选中房源。地图为模拟容器，接入真实地图 API 后仅替换数据层。</p>
+      </div>
+
+      <div class="step2-cols">
+        <div class="listing-col">
+          <div id="listingList" class="listing-list"></div>
+          <button class="btn-add" id="addListingBtn">＋ 添加房源</button>
+        </div>
+        <div class="map-col">
+          <div class="map-wrap" id="mapWrap">
+            <svg id="mapSvg" viewBox="0 0 1000 640" preserveAspectRatio="xMidYMid meet"></svg>
+            <div class="map-modes" id="mapModes">
+              <button class="map-mode active" data-mm="transit">🚇 地铁/公交</button>
+              <button class="map-mode" data-mm="drive">🚗 驾车</button>
+              <button class="map-mode" data-mm="bike">🚲 骑行</button>
+              <button class="map-mode" data-mm="walk">🚶 步行</button>
+            </div>
+            <div class="map-info" id="mapInfo"></div>
+            <div class="map-tools">
+              <button id="mapZoomIn" title="放大">＋</button>
+              <button id="mapZoomOut" title="缩小">－</button>
+              <button id="mapFit" title="回到全部房源">⤢ 全部</button>
+            </div>
+            <div class="map-tag">模拟地图 · 可替换为高德/百度/腾讯 MapProvider</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="step-nav">
+        <button class="btn-back" data-goto="step1">← 上一步</button>
+        <button class="btn-next" data-goto="step3">下一步：我的偏好 →</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 第 3 步：我的偏好 ============ -->
+  <section class="view" id="view-step3">
+    <div class="step-inner">
+      <div class="step-head">
+        <div class="step-no">第 3 步 · 我的偏好</div>
+        <h2>你的理想房子，最重要的是什么？</h2>
+        <p class="step-sub">最多选择 3 项，系统会自动生成建议权重。也可以直接使用均衡的标准推荐。</p>
+      </div>
+
+      <div class="pref-wall" id="prefWall"></div>
+      <div class="pref-profile hidden" id="prefProfile"></div>
+
+      <div class="mode-cards" id="modeCards">
+        <button class="mode-card std active" data-mode="standard">
+          <div class="mc-title">标准推荐 <span class="mc-default">默认</span></div>
+          <div class="mc-desc">按通勤 35%、成本 25%、生活便利 20%、教育资源 10%、居住条件 10% 的均衡标准排序。可靠、透明、无需配置。</div>
+        </button>
+        <button class="mode-card personal" data-mode="personal">
+          <div class="mc-title">按我的偏好</div>
+          <div class="mc-desc">根据你刚选中的重点自动调整权重，排名变化完全可解释。</div>
+        </button>
+      </div>
+
+      <button class="link-btn" id="advToggle">高级设置：微调权重 ▾</button>
+      <div class="adv-panel hidden" id="advPanel">
+        <div class="module-title">顶层权重（自动归一化为 100%）</div>
+        <div id="topSliders"></div>
+        <div class="module-title" style="margin-top:16px">通勤维度细项</div>
+        <div id="commuteSliders"></div>
+        <div class="module-title" style="margin-top:16px">生活便利维度细项</div>
+        <div id="lifeSliders"></div>
+      </div>
+
+      <div class="step-nav">
+        <button class="btn-back" data-goto="step2">← 上一步</button>
+        <button class="btn-next gold" data-goto="result">生成我的选房报告 →</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 结果页 ============ -->
+  <section class="view" id="view-result">
+    <div class="step-inner wide">
+
+      <div class="result-modebar">
+        <div class="mode-switch" id="modeSwitch">
+          <button class="mode-btn std active" data-mode="standard">标准推荐</button>
+          <button class="mode-btn personal" data-mode="personal">按我的偏好</button>
+        </div>
+        <button class="link-btn hidden" id="resetModeBtn">恢复标准推荐</button>
+      </div>
+
+      <!-- 决策结论 Hero -->
+      <div class="hero" id="heroPanel"></div>
+
+      <!-- 多目标标签 -->
+      <div class="picks-row" id="picksRow"></div>
+
+      <!-- 横向对比卡片 -->
+      <div class="sec-head">
+        <h3>全部房源对比</h3>
+        <button class="link-btn" id="fullDataBtn">查看完整数据 ▾</button>
+      </div>
+      <div class="hcards" id="hcards"></div>
+      <div class="full-data hidden" id="fullData">
+        <div class="compare-table-wrap">
+          <table class="compare-table" id="compareTable"></table>
+        </div>
+      </div>
+
+      <!-- 排名差异 -->
+      <div class="sec-head">
+        <h3>标准推荐 vs 我的偏好</h3>
+      </div>
+      <div class="diff-list" id="diffList"></div>
+
+      <!-- 单房源详情 -->
+      <div class="sec-head"><h3>房源详情与评分依据</h3></div>
+      <div id="detailContainer"></div>
+
+      <!-- AI 与返回 -->
+      <div class="result-actions">
+        <button class="btn-next" id="aiOpenBtn">💬 向 AI 追问</button>
+        <div class="back-links">
+          返回修改：
+          <button class="link-btn" data-goto="step1">通勤与底线</button> ·
+          <button class="link-btn" data-goto="step2">房源</button> ·
+          <button class="link-btn" data-goto="step3">偏好</button>
+        </div>
+      </div>
+
+      <p class="school-disclaimer">学校信息仅展示周边教育资源，不代表学区资格，请以教育部门及房产政策为准。所有评分仅用于辅助决策，不构成房产、教育或入学承诺。通勤时间为模拟 P90 估算。</p>
+    </div>
+  </section>
+
+</main>
+
+<!-- AI 决策助手 -->
+<button class="ai-fab hidden" id="aiFab" title="AI 决策助手">AI</button>
+<aside class="ai-panel" id="aiPanel">
+  <div class="ai-head">
+    <div>
+      <h3>AI 决策助手</h3>
+      <p>只解释已有计算结果，不参与评分，不构成承诺</p>
+    </div>
+    <button class="ai-close" id="aiClose">×</button>
+  </div>
+  <div class="ai-quick" id="aiQuick"></div>
+  <div class="ai-messages" id="aiMessages"></div>
+  <div class="ai-input-row">
+    <input type="text" id="aiInput" placeholder="例如：为什么这套房排第一？">
+    <button class="btn-send" id="aiSend">发送</button>
+  </div>
+</aside>
+
+<script src="app.js"></script>
+</body>
+</html>

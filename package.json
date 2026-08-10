@@ -1,0 +1,13 @@
+{
+  "name": "zhunaer",
+  "private": true,
+  "version": "0.1.0",
+  "description": "住哪儿 · 智能房源对比决策（静态页 + Cloudflare Worker 代理）",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

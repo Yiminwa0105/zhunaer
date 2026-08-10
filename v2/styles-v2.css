@@ -1,0 +1,295 @@
+/* =========================================================
+ * 住哪儿 V2 · Apple 风格（基于 emilkowalski/skills 设计规范）
+ * 设计依据：
+ *  - apple-design：translucent 材质、分层深度、字距随字号变化、减弱动效偏好
+ *  - emil-design-eng：自定义强缓动、按压 scale(0.97) 即时反馈、
+ *    150–250ms 内的 UI 动画、阴影替代边框、不用 ease-in
+ * ========================================================= */
+@import url("../styles.css");
+
+:root {
+  /* 自定义强缓动（skills 推荐值） */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
+  /* 色彩重映射：翡翠绿 → Apple 系统蓝；香槟金 → 低饱和琥珀 */
+  --emerald: #0071E3;
+  --emerald-dark: #0062C4;
+  --emerald-bg: #EAF3FE;
+  --gold: #A87C2A;
+  --gold-bg: #F7F0E1;
+  --panel: #FFFFFF;
+  --panel-2: #FFFFFF;
+  --text: #1D1D1F;
+  --text-2: #6E6E73;
+  --line: #E5E5EA;
+  --shadow: 0 2px 16px rgba(0, 0, 0, .06);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, .12);
+}
+
+body {
+  background: #F5F5F7;
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter",
+    "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 视图切换：强 ease-out，260ms（skills：UI 动画 < 300ms，入场用 ease-out） */
+.view.active { animation: fadeUp .26s var(--ease-out) both; }
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* 按压即时反馈（skills：pointer-down 即响应，scale 0.97） */
+.btn-hero, .btn-next, .btn-back, .capsule, .pref-card, .mode-card,
+.map-mode, .c-caps button, .seg button, .prog-item, .btn-add,
+.map-tools button, .ai-fab, .btn-send, .range-tab {
+  transition: transform .16s var(--ease-out), box-shadow .16s var(--ease-out),
+    background-color .16s var(--ease-out), color .16s var(--ease-out),
+    border-color .16s var(--ease-out), opacity .16s var(--ease-out);
+}
+.btn-hero:active, .btn-next:active, .capsule:active, .pref-card:active,
+.mode-card:active, .map-mode:active, .c-caps button:active, .btn-add:active,
+.map-tools button:active, .btn-send:active {
+  transform: scale(.97);
+}
+
+/* ---------- 顶部细条：translucent 材质 ---------- */
+.topbar {
+  background: rgba(255, 255, 255, .72);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-bottom: none;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, .05);
+}
+.brand-mini { color: var(--text); }
+.brand-dot { background: var(--emerald); }
+.demo-badge { border-color: rgba(0, 0, 0, .12); color: var(--text-2); }
+.prog-item { color: #86868B; }
+.prog-item.current { color: var(--text); }
+.prog-item.done { color: var(--emerald); }
+.prog-sep { background: rgba(0, 0, 0, .12); }
+
+/* ---------- 欢迎页：浅色 + 大字距排版 ---------- */
+.view-welcome {
+  background:
+    radial-gradient(900px 480px at 82% -8%, rgba(0, 113, 227, .08), transparent),
+    #F5F5F7;
+}
+.welcome-kicker { color: var(--emerald); letter-spacing: .14em; }
+.welcome-text h1 { color: var(--text); letter-spacing: -.028em; font-weight: 700; }
+.welcome-text h1 .hl { color: var(--emerald); }
+.welcome-sub { color: var(--text-2); letter-spacing: .01em; }
+.welcome-values b { color: var(--text); }
+.welcome-values b::before { color: var(--emerald); }
+.welcome-values span { color: #86868B; }
+.welcome-note { color: #86868B; }
+
+.btn-hero {
+  background: var(--emerald);
+  border-radius: 999px;
+  box-shadow: 0 4px 16px rgba(0, 113, 227, .25);
+}
+.btn-hero:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 28px rgba(0, 113, 227, .35);
+}
+
+/* 欢迎页插画：浅色地图 */
+.welcome-svg g path { stroke: #E3E3DE; }
+.welcome-svg g path[stroke="#274B43"] { stroke: #D5D5D0; }
+.welcome-svg .glow-route {
+  stroke: var(--emerald);
+  filter: drop-shadow(0 0 8px rgba(0, 113, 227, .5));
+}
+.welcome-svg circle[fill="#2E8B72"] { fill: var(--emerald); }
+.welcome-svg circle[stroke="#2E8B72"] { stroke: var(--emerald); }
+.welcome-svg circle[fill="#C9A66B"] { fill: #FF9F0A; }
+.welcome-svg rect[fill="#C9A66B"] { fill: #1D1D1F; }
+.float-chip {
+  background: rgba(255, 255, 255, .82);
+  backdrop-filter: blur(14px) saturate(160%);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
+  color: var(--text);
+  border: 1px solid rgba(0, 0, 0, .05);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .10);
+}
+.fc3 { color: var(--emerald); }
+
+/* ---------- 步骤页文字（深底 → 浅底） ---------- */
+.step-head h2 { color: var(--text); letter-spacing: -.022em; font-weight: 700; }
+.step-no { color: var(--emerald); letter-spacing: .12em; }
+.step-sub { color: var(--text-2); }
+.sec-head { color: var(--text); }
+.sec-head h3::before { background: var(--emerald); }
+
+/* ---------- 深色组件转浅色 ---------- */
+.capsule.active { background: #1D1D1F; border-color: #1D1D1F; color: #fff; }
+.bottomline-bar {
+  background: #fff; color: var(--text);
+  border-left: 4px solid var(--risk);
+  box-shadow: var(--shadow);
+}
+.bottomline-bar .bl-label { color: var(--risk); }
+.btn-back { border-color: rgba(0, 0, 0, .18); color: var(--text-2); }
+.btn-back:hover { border-color: var(--text); color: var(--text); }
+.btn-add { border-color: rgba(0, 0, 0, .2); color: var(--text-2); }
+.btn-add:hover { border-color: var(--emerald); color: var(--emerald); }
+.pref-profile {
+  background: var(--emerald-bg); color: var(--text);
+  border-left: 4px solid var(--emerald);
+}
+.pref-profile b { color: var(--emerald-dark); }
+.back-links { color: var(--text-2); }
+.back-links .link-btn { color: var(--emerald); }
+.pick-chip {
+  background: #fff; border: none; color: var(--text);
+  box-shadow: var(--shadow);
+}
+.pick-chip b { color: var(--text-2); }
+.range-tab.active { background: #1D1D1F; color: #fff; border-color: #1D1D1F; }
+
+/* 结果页模式切换：iOS 分段控件 */
+.mode-switch { background: #E9E9EB; border: none; }
+.mode-btn { color: var(--text-2); }
+.mode-btn.std.active,
+.mode-btn.personal.active {
+  background: #fff; color: var(--text);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .12);
+}
+.mode-btn.personal.active { color: var(--emerald); }
+.result-modebar .link-btn { color: var(--emerald); }
+
+/* ---------- 地图：浅色底图 ---------- */
+.map-wrap { background: #E9EBE4; }
+#mapSvg > rect { fill: #E9EBE4; }
+#mapSvg g[stroke="#1B332F"] { stroke: #FCFCFA; }       /* 道路网格 → 白 */
+#mapSvg path[stroke="#1C3A38"] { stroke: #BBD9F2; }    /* 水面 → 浅蓝 */
+#mapSvg path[stroke="#26474A"] { stroke: #9CC8EA; }
+#mapSvg text { fill: #8E8E93; }
+#mapSvg g[data-pin] text { fill: #fff; }
+#mapSvg g:not([data-pin]) circle[fill="#F7F6F2"] { fill: #fff; }
+.map-modes {
+  background: rgba(255, 255, 255, .78);
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .10);
+}
+.map-mode { color: var(--text-2); }
+.map-mode.active { background: #1D1D1F; color: #fff; }
+.map-info {
+  background: rgba(255, 255, 255, .88);
+  backdrop-filter: blur(16px) saturate(160%);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+}
+.map-tag { color: #8E8E93; }
+
+/* Hero 小地图同步浅色 */
+.hero-map { background: #E9EBE4; }
+.hero-map svg rect { fill: #E9EBE4; }
+.hero-map svg path[stroke="#1C3A38"] { stroke: #BBD9F2; }
+
+/* Hero 评分环 → 蓝 */
+.hero-score-ring circle[stroke="#2E8B72"] { stroke: var(--emerald); }
+
+/* ---------- AI 面板 ---------- */
+.ai-fab { background: var(--emerald); box-shadow: 0 6px 20px rgba(0, 113, 227, .4); }
+.ai-fab:hover { background: var(--emerald-dark); }
+.ai-head { background: #1D1D1F; }
+
+/* ---------- 可访问性（skills §14） ---------- */
+@media (prefers-reduced-transparency: reduce) {
+  .topbar, .map-modes, .map-info, .float-chip {
+    background: #fff;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+/* =========================================================
+ * V2 调整：背景氛围 + 版面呼吸感
+ * ========================================================= */
+
+/* 欢迎页：暖白 ↔ 浅蓝的缓慢渐变（克制、不干扰阅读） */
+.view-welcome {
+  background: linear-gradient(125deg, #F5F5F7 0%, #E2EEFB 30%, #F5F5F7 55%, #D8E9FA 80%, #F5F5F7 100%);
+  background-size: 280% 280%;
+  animation: welcomeDrift 22s ease-in-out infinite;
+}
+@keyframes welcomeDrift {
+  0%, 100% { background-position: 0% 40%; }
+  50% { background-position: 100% 60%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .view-welcome { animation: none; }
+}
+
+/* 步骤页 / 结果页：淡蓝灰底 + 顶部极轻的品牌色光晕（不喧宾夺主） */
+#view-step1, #view-step2, #view-step3, #view-result {
+  background:
+    radial-gradient(1100px 420px at 85% -6%, rgba(0, 113, 227, .06), transparent),
+    radial-gradient(900px 380px at 8% 4%, rgba(0, 113, 227, .04), transparent),
+    linear-gradient(#EEF3F9, #F5F5F7 460px);
+  min-height: calc(100vh - 51px);
+}
+
+/* 版面放大：容器更宽、留白更饱满、字号更大 */
+.step-inner { max-width: 1160px; padding-top: 60px; }
+.step-inner.wide { max-width: 1320px; }
+.step-head { margin-bottom: 44px; }
+.step-head h2 { font-size: 44px; }
+.step-sub { font-size: 17px; }
+
+.block { padding: 42px 46px; border-radius: 26px; }
+.block-title { font-size: 19px; margin-bottom: 26px; }
+.big-fields { gap: 26px 32px; }
+.field label { font-size: 14px; }
+.input-lg { padding: 16px 18px; font-size: 18px; }
+.capsule { padding: 11px 22px; font-size: 15px; }
+
+.constraint-grid { grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; }
+.constraint-item { padding: 20px 22px; }
+.constraint-item .c-label { font-size: 15px; }
+.seg button { padding: 9px 0; font-size: 13px; }
+.bottomline-bar { padding: 17px 26px; font-size: 15px; }
+
+/* 第 2 步：卡片与地图更高 */
+.listing-card { padding: 22px 24px; }
+.lc-name { font-size: 16px; }
+.lc-meta, .lc-depart { font-size: 14px; }
+.map-wrap, #mapSvg { min-height: 560px; }
+.map-info { padding: 18px 24px; }
+.map-info .mi-time { font-size: 34px; }
+.map-info .mi-sub { font-size: 13px; }
+
+/* 第 3 步：偏好卡片更大 */
+.pref-wall { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 16px; }
+.pref-card { padding: 26px 24px; }
+.pref-card .pc-icon { font-size: 28px; }
+.pref-card .pc-title { font-size: 16px; }
+.pref-card .pc-sub { font-size: 13px; }
+.mode-card { padding: 30px 32px; }
+.mc-title { font-size: 20px; }
+.mc-desc { font-size: 14px; }
+.adv-panel { padding: 28px 32px; }
+
+/* 结果页：Hero 与卡片更舒展 */
+.hero { padding: 46px 52px; }
+.hero-name { font-size: 34px; }
+.hero-reasons { font-size: 15px; }
+.hcard { padding: 24px 26px; }
+.detail-card { padding: 24px 28px; }
+
+.step-nav { margin-top: 44px; }
+.btn-next { padding: 16px 40px; font-size: 16px; }
+.btn-back { padding: 14px 30px; font-size: 15px; }
+
+@media (max-width: 960px) {
+  .step-head h2 { font-size: 32px; }
+  .block { padding: 26px 22px; }
+  .map-wrap, #mapSvg { min-height: 340px; }
+  .hero { padding: 30px 26px; }
+}

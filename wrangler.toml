@@ -1,0 +1,6 @@
+name = "zhunaer-etd-proxy"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# Web服务 Key 不要写在这里，用命令配置为密钥：
+#   npx wrangler secret put AMAP_WEB_KEY
