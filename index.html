@@ -23,7 +23,7 @@
       <span class="prog-sep"></span>
       <button class="prog-item" data-goto="result"><i>04</i> 选房报告</button>
     </nav>
-    <div class="demo-badge">Demo 模拟数据</div>
+    <div class="demo-badge">真实数据加载中…</div>
   </div>
 </header>
 
@@ -67,7 +67,7 @@
         <div class="float-chip fc3">⏰ 最晚 08:06 出发</div>
       </div>
     </div>
-    <p class="welcome-note">本 Demo 全部使用模拟数据，不构成任何房产、教育或入学承诺。</p>
+    <p class="welcome-note">通勤与配套数据来自高德地图实时查询，不构成任何房产、教育或入学承诺。</p>
   </section>
 
   <!-- ============ 第 1 步：通勤与底线 ============ -->
@@ -84,7 +84,7 @@
         <div class="big-fields">
           <div class="field">
             <label for="companyInput">公司地址</label>
-            <input type="text" id="companyInput" class="input-lg" value="上海陆家嘴金融中心">
+            <input type="text" id="companyInput" class="input-lg" value="上海中心大厦">
           </div>
           <div class="field">
             <label for="arriveTime">目标到达时间（工作日）</label>
@@ -126,7 +126,7 @@
       <div class="step-head">
         <div class="step-no">第 2 步 · 房源与地图</div>
         <h2>添加候选房源，看看每天怎么走</h2>
-        <p class="step-sub">支持 2–5 套房源，已预置 3 套上海示例。点击卡片或地图图钉可切换选中房源。地图为模拟容器，接入真实地图 API 后仅替换数据层。</p>
+        <p class="step-sub">支持 2–5 套房源，已预置 3 套上海示例。点击卡片或地图图钉可切换选中房源。通勤与配套数据全部来自高德地图实时查询。</p>
       </div>
 
       <div class="step2-cols">
@@ -136,7 +136,7 @@
         </div>
         <div class="map-col">
           <div class="map-wrap" id="mapWrap">
-            <svg id="mapSvg" viewBox="0 0 1000 640" preserveAspectRatio="xMidYMid meet"></svg>
+            <div id="dataError" class="data-error hidden"></div>
             <div id="amapContainer" class="amap-container hidden"></div>
             <div id="mapLoading" class="map-loading hidden">正在调用高德地图获取真实通勤与配套数据…</div>
             <div class="map-modes" id="mapModes">
@@ -150,7 +150,7 @@
               <button id="mapZoomOut" title="缩小">－</button>
               <button id="mapFit" title="回到全部房源">⤢ 全部</button>
             </div>
-            <div class="map-tag">模拟地图 · 可替换为高德/百度/腾讯 MapProvider</div>
+            <div class="map-tag">真实地图 · 高德地图 JS API</div>
           </div>
           <div class="map-info" id="mapInfo"></div>
         </div>
@@ -254,7 +254,7 @@
         </div>
       </div>
 
-      <p class="school-disclaimer">学校信息仅展示周边教育资源，不代表学区资格，请以教育部门及房产政策为准。所有评分仅用于辅助决策，不构成房产、教育或入学承诺。通勤时间为模拟 P90 估算。</p>
+      <p class="school-disclaimer">学校信息仅展示周边教育资源，不代表学区资格，请以教育部门及房产政策为准。所有评分仅用于辅助决策，不构成房产、教育或入学承诺。通勤时间为高德规划时长 + 缓冲估算（P90 口径）。</p>
     </div>
   </section>
 

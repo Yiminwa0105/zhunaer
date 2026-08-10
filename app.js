@@ -1,8 +1,8 @@
 /* =========================================================
- * 住哪儿 · 标准推荐与个性化偏好决策系统（Demo，全部模拟数据）
+ * 住哪儿 · 标准推荐与个性化偏好决策系统
  * 模型：硬约束 + 可解释加权评分 + 通勤可靠性（保守通勤时间）
- * 地图：MockMapProvider / RouteProvider 模拟实现，
- *       接入真实地图 API 时仅替换这两个 Provider，评分引擎不变。
+ * 数据：全部来自高德地图 JS API 实时查询（地理编码/路线规划/POI），
+ *       无模拟数据；接口失败时明确报错，不用假数据冒充真实数据。
  * ========================================================= */
 
 /* ---------- 维度与权重 ---------- */
@@ -31,8 +31,14 @@ const LIFE_SUBS = [
   { key: 'park',      label: '公园和运动设施',     def: 10 },
 ];
 
-/* ---------- 通勤可靠性规则（模拟 P90） ----------
- * 保守通勤时间 = 常规时间(P50) + 方式缓冲 + 10 分钟到楼/打卡缓冲 */
+/* ---------- 通勤时间口径定义 ----------
+ * P50（常规路线通勤时间）= 从房源出发至公司地图终点，在指定交通方式、
+ *   工作日、相近出发时段下的历史路线耗时中位数。P50 仅包含地图路线本身的耗时
+ *   （步行接驳、等车、乘车、换乘或驾车路段），不包含进入园区、停车、安检、
+ *   等电梯、走到工位和打卡时间。
+ *   实现：opt.duration 直接取高德路线规划时长（公交含步行接驳/等车/换乘，
+ *   驾车含实时路况），符合上述口径；ETD 开通后驾车 P50 为同时段历史预测值。
+ * 保守通勤时间 = P50 + 方式波动缓冲 + 到楼/打卡缓冲（ARRIVAL_BUFFER） */
 const ARRIVAL_BUFFER = 10;
 const MODE_KIND = {
   metro_direct:   { buffer: 10, label: '地铁直达', rel: '稳定',     relScore: 95, fee: 5 },
@@ -83,50 +89,10 @@ const AMENITY_META = {
 };
 const LISTING_COLORS = ['#2E8B72', '#C9A66B', '#5B7FB8', '#8A6BB8', '#C26A8A'];
 
-/* ---------- MapProvider / RouteProvider（模拟实现） ----------
- * 职责：地理编码、路线几何、站点数据。评分引擎只消费返回的结构化事实数据。
- * 接入高德/百度/腾讯地图时，仅需用真实实现替换这两个对象。 */
-const MockMapProvider = {
-  // 虚拟坐标系 1000×640，模拟上海陆家嘴及周边
-  companyCoord: { x: 660, y: 290 },
-  geocode(address, salt = 0) {
-    let h = 0;
-    const s = String(address) + '|' + salt;
-    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-    return { x: 110 + (h % 780), y: 80 + ((h >>> 9) % 480) };
-  },
-};
-const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
-const RouteProvider = {
-  // 返回：路径点、关键站点/换乘点、距离、时长、换乘次数
-  plan(from, to, mode, opt) {
-    const points = [];
-    const stops = [];
-    if (mode === 'transit') {
-      const s1 = lerp(from, to, 0.16);
-      const mid = lerp(from, to, 0.55); mid.y -= 30;
-      points.push(from, s1, mid, to);
-      stops.push({ p: s1, label: '进站' });
-      if (opt.transfers > 0) stops.push({ p: mid, label: '换乘' });
-    } else {
-      const mid = lerp(from, to, 0.5);
-      mid.x += mode === 'drive' ? 40 : 16;
-      mid.y -= mode === 'drive' ? 26 : 10;
-      points.push(from, mid, to);
-    }
-    return {
-      points, stops,
-      distance: opt.distance, duration: opt.duration,
-      transfers: opt.transfers, kind: opt.kind,
-      dailyFee: Math.round(MODE_KIND[opt.kind].fee * 2),
-    };
-  },
-};
-
 /* =========================================================
  * 高德真实地图 Provider（JS API 2.0）
- * 数据获取成功后写入与模拟数据完全一致的结构，评分引擎无感知；
- * 任何一步失败都会保留该房源的模拟数据兜底，页面不会崩。
+ * 数据获取成功后写入统一的结构化数据，评分引擎无感知；
+ * 必需数据失败时明确报错并标记房源，不使用任何模拟数据。
  * ========================================================= */
 const USE_AMAP = typeof window.AMap !== 'undefined';
 // 「未来路线规划」Worker 代理地址（Cloudflare Worker，见 worker.js）。
@@ -251,7 +217,7 @@ async function amapFutureDrive(from, to, departTs) {
   }
 }
 
-/* 真实经纬度 → 虚拟坐标（供结果页小地图与模拟兜底渲染复用） */
+/* 真实经纬度 → 虚拟坐标（供结果页 Hero 相对方位小地图使用） */
 function lnglatToVirtual(g) {
   const c = state._companyGeo ? state._companyGeo.lnglat : g;
   const x = 660 + (g.lng - c.lng) * 5500 * Math.cos((c.lat * Math.PI) / 180);
@@ -260,20 +226,26 @@ function lnglatToVirtual(g) {
 }
 
 /* 预取真实数据：公司/房源地理编码 → 4 种通勤 → 周边 POI。
- * 以「房源地址+公司地址」为签名做缓存，未变化时不重复请求。 */
+ * 全部来自高德实时查询，无模拟数据：任何必需环节失败则标记该房源加载失败，
+ * 由 UI 明确提示，不用假数据冒充。以「房源地址+公司地址」为缓存签名。 */
 async function ensureRealData() {
-  if (!USE_AMAP) return false;
+  if (!USE_AMAP) {
+    state.dataError = '高德地图加载失败（可能是网络或 Key 问题），请刷新重试';
+    return false;
+  }
+  state.dataError = null;
   if (!state._companyGeo || state._companyGeo.addr !== state.company) {
     try {
       const g = await amapGeocode(state.company);
       state._companyGeo = { addr: state.company, lnglat: g };
       if (g.city) state._companyCity = g.city;
     } catch (e) {
-      console.warn('[住哪儿] 公司地址解析失败，使用模拟地图兜底', e);
-      return state.usingReal;
+      state.dataError = `公司地址「${state.company}」解析失败，请在第 1 步填写更精确的地址（如「上海中心大厦」）`;
+      return false;
     }
   }
   const company = state._companyGeo.lnglat;
+  let failed = 0;
   for (const l of state.listings) {
     const sig = `${l.address}|${state.company}`;
     if (l._realSig === sig) continue;
@@ -284,32 +256,41 @@ async function ensureRealData() {
         l.lnglat = g;
         l.coord = lnglatToVirtual(g);
       }
+      // 4 种通勤方式全部为必需数据，任一失败则视为该房源加载失败
+      const commute = {}, paths = {};
       for (const m of TRANSPORT_MODES) {
         const r = await amapRoute(l.lnglat, company, m, state._companyCity);
-        if (r) {
-          l.commute[m] = { duration: r.duration, distance: r.distance, kind: r.kind, transfers: r.transfers, route: r.route };
-          l._paths = l._paths || {};
-          l._paths[m] = r.path;
-        }
+        if (!r) throw new Error(`${TRANSPORT_LABEL[m]}路线规划失败`);
+        commute[m] = { duration: r.duration, distance: r.distance, kind: r.kind, transfers: r.transfers, route: r.route };
+        paths[m] = r.path;
       }
+      // 周边 POI：搜不到 = 5km 内确实没有（真实结果），不算失败
+      const amenities = {};
       for (const [key, kw] of POI_QUERIES) {
-        const poi = await amapPoi(kw, l.lnglat);
-        l.amenities[key] = poi;
-        if (key === 'metro' && poi) {
-          l.station = { name: poi.name, walk: Math.round(poi.dist * 1000), walkMin: poi.walkMin };
-        }
+        amenities[key] = await amapPoi(kw, l.lnglat);
       }
+      l.station = amenities.metro
+        ? { name: amenities.metro.name, walk: Math.round(amenities.metro.dist * 1000), walkMin: amenities.metro.walkMin }
+        : { name: '5 公里内无地铁站', walk: 9999, walkMin: 99 };
+      l.commute = commute;
+      l._paths = paths;
+      l.amenities = amenities;
       l._realSig = sig;
+      l._failed = false;
     } catch (e) {
-      console.warn('[住哪儿] 房源真实数据获取失败，保留模拟数据', l.address, e);
+      l._failed = true;
+      l._realSig = null;
+      failed++;
+      console.warn('[住哪儿] 房源真实数据获取失败', l.address, e);
     }
   }
+  if (failed) state.dataError = `${failed} 套房源的真实数据加载失败，请检查地址是否精确，或稍后重试`;
   // 未来路线规划：用「到达时间 − 缓冲」倒推出发时刻，查询该时刻的同时段驾车时长。
   // 以「地址+公司+到达时间」为缓存签名，到达时间变化时自动重查，失败保持缓冲模型结果。
   if (FUTURE_ROUTE_API) {
     const futSigOf = (l) => `${l.address}|${state.company}|${state.arriveTime}`;
     for (const l of state.listings) {
-      if (!l.lnglat || !l.commute.drive || l._futureSig === futSigOf(l)) continue;
+      if (!l.lnglat || !l.commute || !l.commute.drive || l._futureSig === futSigOf(l)) continue;
       const departMin = parseTime(state.arriveTime) - modeConservative('drive', l.commute.drive);
       const fut = await amapFutureDrive(l.lnglat, company, nextDepartureTs(departMin));
       if (fut) {
@@ -326,6 +307,7 @@ async function ensureRealData() {
 
 function initAmapMap() {
   if (amapMap || !USE_AMAP) return;
+  $('#amapContainer').classList.remove('hidden');
   amapMap = new AMap.Map('amapContainer', {
     viewMode: '2D', zoom: 11, center: [121.4998, 31.2397],
     mapStyle: 'amap://styles/darkblue',
@@ -390,87 +372,37 @@ function setMapLoading(on) {
 }
 function updateDataBadge() {
   const badge = document.querySelector('.demo-badge');
-  if (badge) badge.textContent = state.usingReal ? '高德真实数据' : 'Demo 模拟数据';
+  if (badge) badge.textContent = state.dataError ? '真实数据不可用' : state.usingReal ? '高德真实数据' : '真实数据加载中…';
   const tag = document.querySelector('.map-tag');
-  if (tag) tag.textContent = state.usingReal
-    ? '真实地图 · 高德地图 JS API（评分引擎不变）'
-    : '模拟地图 · 可替换为高德/百度/腾讯 MapProvider';
+  if (tag) tag.textContent = '真实地图 · 高德地图 JS API';
+}
+/* 数据状态提示：真实数据加载失败时明确报错（无模拟数据兜底） */
+function renderDataState() {
+  const el = $('#dataError');
+  if (el) {
+    el.classList.toggle('hidden', !state.dataError);
+    el.textContent = state.dataError || '';
+  }
+  updateDataBadge();
 }
 
-/* ---------- 预置模拟房源（上海示例数据，作为真实数据的兜底） ---------- */
+/* ---------- 预置示例房源（仅房源档案信息；通勤/坐标/配套全部由高德实时查询填充） ---------- */
 function seedListings() {
   return [
     {
       id: 1, name: '徐汇滨江一居室', address: '上海市徐汇区龙兰路 399 弄',
       rent: 7200, area: 52, layout: '1室1厅', floor: '12/18层', facing: '南',
       rentType: '整租', bath: '独卫', note: '近滨江步道，小区较新',
-      coord: { x: 380, y: 430 },
-      commute: {
-        transit: { duration: 38, distance: 9.6,  kind: 'metro_transfer', transfers: 1, route: '步行 6 分钟至 11 号线龙耀路站 → 换乘 2 号线 → 陆家嘴站，共 9 站' },
-        drive:   { duration: 32, distance: 11.8, kind: 'drive',          transfers: 0, route: '龙腾大道 → 内环高架 → 延安东路隧道，早高峰有拥堵风险' },
-        bike:    { duration: 41, distance: 9.2,  kind: 'bike',           transfers: 0, route: '滨江骑行道 → 东昌路渡口方向，全程非机动车道约 80%' },
-        walk:    { duration: 118, distance: 9.2, kind: 'walk',           transfers: 0, route: '全程步行约 9.2 公里，不推荐作为日常通勤方式' },
-      },
-      station: { name: '11 号线龙耀路站', walk: 450, walkMin: 6 },
-      amenities: {
-        metro:    { name: '11 号线龙耀路站',      dist: 0.45, walkMin: 6,  driveMin: 2 },
-        hema:     { name: '盒马鲜生（徐汇滨江店）', dist: 0.8,  walkMin: 11, driveMin: 4 },
-        aldi:     { name: '奥乐齐（龙华中路店）',   dist: 1.6,  walkMin: 22, driveMin: 7 },
-        sam:      null,
-        rt:       { name: '大润发（龙华店）',      dist: 2.8,  walkMin: 38, driveMin: 10 },
-        market:   { name: '龙华菜市场',           dist: 1.1,  walkMin: 15, driveMin: 5 },
-        hospital: { name: '龙华医院（三甲）',      dist: 2.2,  walkMin: 30, driveMin: 9 },
-        school:   { name: '徐汇区龙华小学',        dist: 0.9,  walkMin: 12, driveMin: 4 },
-        park:     { name: '徐汇滨江绿地',          dist: 0.3,  walkMin: 4,  driveMin: 2 },
-      },
     },
     {
       id: 2, name: '静安大宁两居室', address: '上海市静安区灵石路 718 号',
       rent: 8600, area: 78, layout: '2室2厅', floor: '6/11层', facing: '南北',
       rentType: '整租', bath: '独卫', note: '近大宁公园，适合家庭',
-      coord: { x: 330, y: 120 },
-      commute: {
-        transit: { duration: 47, distance: 13.4, kind: 'metro_transfer', transfers: 1, route: '步行 8 分钟至 1 号线上海马戏城站 → 人民广场换乘 2 号线 → 陆家嘴站，共 11 站' },
-        drive:   { duration: 38, distance: 15.6, kind: 'drive',          transfers: 0, route: '共和新路高架 → 南北高架 → 延安东路隧道，早高峰拥堵明显' },
-        bike:    { duration: 58, distance: 13.0, kind: 'bike',           transfers: 0, route: '灵石路 → 恒丰路 → 苏州河骑行道，距离较远' },
-        walk:    { duration: 163, distance: 13.0, kind: 'walk',          transfers: 0, route: '全程步行约 13 公里，不推荐作为日常通勤方式' },
-      },
-      station: { name: '1 号线上海马戏城站', walk: 620, walkMin: 8 },
-      amenities: {
-        metro:    { name: '1 号线上海马戏城站',  dist: 0.62, walkMin: 8,  driveMin: 3 },
-        hema:     { name: '盒马鲜生（大宁店）',   dist: 1.4,  walkMin: 19, driveMin: 6 },
-        aldi:     { name: '奥乐齐（大宁国际店）', dist: 0.7,  walkMin: 10, driveMin: 3 },
-        sam:      { name: '山姆会员店（宝山店）', dist: 4.6,  walkMin: 62, driveMin: 15 },
-        rt:       { name: '大润发（闸北店）',     dist: 2.1,  walkMin: 28, driveMin: 8 },
-        market:   { name: '灵石路菜市场',        dist: 0.4,  walkMin: 5,  driveMin: 2 },
-        hospital: { name: '第十人民医院（三甲）', dist: 1.8,  walkMin: 24, driveMin: 7 },
-        school:   { name: '大宁国际小学',        dist: 0.5,  walkMin: 7,  driveMin: 2 },
-        park:     { name: '大宁灵石公园',        dist: 0.6,  walkMin: 8,  driveMin: 3 },
-      },
     },
     {
       id: 3, name: '浦东三林一居室', address: '上海市浦东新区三林路 518 弄',
       rent: 5600, area: 48, layout: '1室1厅', floor: '3/6层', facing: '东南',
       rentType: '整租', bath: '独卫', note: '租金低，离前滩近',
-      coord: { x: 600, y: 470 },
-      commute: {
-        transit: { duration: 33, distance: 7.8, kind: 'metro_transfer', transfers: 1, route: '步行 5 分钟至 11 号线三林站 → 东方体育中心换乘 6 号线，共 7 站' },
-        drive:   { duration: 26, distance: 9.4, kind: 'drive',          transfers: 0, route: '济阳路 → 卢浦大桥 → 世纪大道，早高峰中度拥堵' },
-        bike:    { duration: 34, distance: 7.5, kind: 'bike',           transfers: 0, route: '三林路 → 世博骑行道 → 东昌路，路况较好' },
-        walk:    { duration: 95, distance: 7.5, kind: 'walk',           transfers: 0, route: '全程步行约 7.5 公里，不推荐作为日常通勤方式' },
-      },
-      station: { name: '11 号线三林站', walk: 380, walkMin: 5 },
-      amenities: {
-        metro:    { name: '11 号线三林站',      dist: 0.38, walkMin: 5,  driveMin: 2 },
-        hema:     { name: '盒马鲜生（三林店）',  dist: 2.6,  walkMin: 35, driveMin: 9 },
-        aldi:     null,
-        sam:      { name: '山姆会员店（浦东店）', dist: 3.2,  walkMin: 43, driveMin: 11 },
-        rt:       { name: '大润发（三林店）',     dist: 0.9,  walkMin: 12, driveMin: 4 },
-        market:   { name: '三林塘菜市场',        dist: 0.6,  walkMin: 8,  driveMin: 3 },
-        hospital: { name: '东方医院南院（三甲）', dist: 2.9,  walkMin: 39, driveMin: 10 },
-        school:   { name: '三林镇中心小学',      dist: 1.2,  walkMin: 16, driveMin: 5 },
-        park:     { name: '三林体育公园',        dist: 1.5,  walkMin: 20, driveMin: 6 },
-      },
     },
   ];
 }
@@ -478,7 +410,7 @@ function seedListings() {
 /* ---------- 全局状态 ---------- */
 const state = {
   view: 'welcome',
-  company: '上海陆家嘴金融中心',
+  company: '上海中心大厦',
   arriveTime: '09:00',
   budget: 8000,
   prefTransport: 'mix',
@@ -495,9 +427,9 @@ const state = {
   weights: { ...STD_WEIGHTS },
   selectedId: 1,               // 地图选中房源
   mapMode: 'transit',          // 地图当前交通方式
-  mapView: { cx: 500, cy: 320, scale: 1 },
   collapsed: {},
   usingReal: false,            // 是否已切换到高德真实数据
+  dataError: null,             // 真实数据加载失败原因（无模拟兜底，失败必须明示）
   _companyGeo: null,           // 公司地理编码缓存 { addr, lnglat }
   _companyCity: '上海',
 };
@@ -542,7 +474,7 @@ function amenityStatus(a) {
   return { text: '较远', cls: 'pill-orange' };
 }
 
-/* ---------- 通勤计算（消费 RouteProvider 结构化数据） ---------- */
+/* ---------- 通勤计算（消费高德路线规划结构化数据） ---------- */
 function modeConservative(mode, opt) {
   return opt.duration + MODE_KIND[opt.kind].buffer + ARRIVAL_BUFFER;
 }
@@ -611,7 +543,7 @@ function getRecommendedCommute(l) {
 }
 
 /* ---------- 成本计算 ---------- */
-function actualMonthly(l) { return l.rent + Math.round(l.area * 4); }                 // 租金 + 模拟水电物业
+function actualMonthly(l) { return l.rent + Math.round(l.area * 4); }                 // 租金 + 估算水电物业
 function transitMonthly(rec) { return Math.round(MODE_KIND[rec.kind].fee * 2 * 22); } // 单程费 × 2 × 22 工作日
 function totalMonthly(l, rec) { return actualMonthly(l) + transitMonthly(rec); }
 
@@ -721,7 +653,7 @@ function checkConstraint(key, val, c) {
     case 'school': {
       const r = amenityRange(c.amenities.school);
       if (r !== null && r <= 3) return { sev: 'ok', text: `学校 ${c.amenities.school.dist}km（不代表学区资格）` };
-      return r === 5 ? { sev: 'minor', text: `学校较远（${c.amenities.school.dist}km）` } : { sev: 'major', text: '5km 内无学校（模拟数据）' };
+      return r === 5 ? { sev: 'minor', text: `学校较远（${c.amenities.school.dist}km）` } : { sev: 'major', text: '5km 内无学校' };
     }
     case 'minArea': {
       const short = val - c.area;
@@ -775,7 +707,9 @@ function computeAll() {
   const subC = effectiveCommuteSub();
   const subL = effectiveLifeSub();
 
-  state.computed = state.listings.map((l, idx) => {
+  // 只计算真实数据已就绪的房源（无模拟数据，未加载成功的房源不参与评分）
+  state.computed = state.listings.filter((l) => l.commute && l.station && l.amenities).map((l) => {
+    const idx = state.listings.indexOf(l); // 字母/颜色锚定原始顺序，不受加载失败房源影响
     const rec = getRecommendedCommute(l);
     const d = computeDimScores(l, rec, state.listings);
 
@@ -886,16 +820,14 @@ function showView(name) {
     el.classList.toggle('done', i >= 0 && idx > i); // 首页等非步骤项不标记完成态
   });
   if (name === 'step2') {
-    computeAll(); renderListingCards(); mapFitAll(); renderMap();
-    if (USE_AMAP) {
-      setMapLoading(true);
-      ensureRealData().then((ok) => {
-        setMapLoading(false);
-        computeAll(); renderListingCards();
-        if (ok) initAmapMap();
-        mapFitAll(); renderMap(); updateDataBadge();
-      });
-    }
+    computeAll(); renderListingCards(); renderDataState();
+    setMapLoading(true);
+    ensureRealData().then((ok) => {
+      setMapLoading(false);
+      if (ok) initAmapMap();
+      computeAll(); renderListingCards();
+      mapFitAll(); renderMap(); renderDataState();
+    });
   }
   if (name === 'step3') { renderPrefWall(); renderPrefProfile(); renderModeCards(); renderSliders(); }
   if (name === 'result') { renderResult(); }
@@ -950,7 +882,7 @@ function renderBottomline() {
 }
 
 /* =========================================================
- * 第 2 步：房源卡片 + 模拟地图
+ * 第 2 步：房源卡片 + 高德真实地图
  * ========================================================= */
 function renderListingCards() {
   const wrap = $('#listingList');
@@ -967,7 +899,10 @@ function renderListingCards() {
         <button class="lc-del" data-del="${l.id}" title="删除" ${state.listings.length <= 2 ? 'disabled style="opacity:.2"' : ''}>×</button>
       </div>
       <div class="lc-meta">¥${fmtMoney(l.rent)}/月 · ${l.area}㎡ · ${l.layout} · ${l.rentType}</div>
-      ${c ? `<div class="lc-depart">推荐：${fmtTime(c.departMin)} 出发 · 保守通勤 ${c.rec.cons} 分钟</div>` : ''}
+      ${l._failed
+        ? '<div class="lc-depart" style="color:var(--risk)">真实数据加载失败，请检查地址后重新输入</div>'
+        : c ? `<div class="lc-depart">推荐：${fmtTime(c.departMin)} 出发 · 保守通勤 ${c.rec.cons} 分钟</div>`
+        : '<div class="lc-depart">正在获取真实通勤数据…</div>'}
       <div class="lc-form">
         <div class="span2"><label>房源名称</label><input type="text" data-id="${l.id}" data-f="name" value="${l.name}"></div>
         <div class="span2"><label>地址</label><input type="text" data-id="${l.id}" data-f="address" value="${l.address}"></div>
@@ -1006,188 +941,51 @@ const listingSpy = new IntersectionObserver((entries) => {
   });
 }, { rootMargin: '-42% 0px -42% 0px' });
 
-/* 为新增房源生成模拟数据（坐标走 MapProvider.geocode） */
-function generateMockData(seed) {
-  const rnd = (n) => { const x = Math.sin(seed * 9301 + n * 49297) * 233280; return x - Math.floor(x); };
-  const dist = Math.round((5 + rnd(1) * 12) * 10) / 10;
-  const t = Math.round(25 + rnd(2) * 35);
-  const mk = (base, spread) => Math.round(base + rnd(3 + spread) * spread);
-  const poi = (name, d2) => ({ name, dist: d2, walkMin: Math.max(2, Math.round(d2 * 13)), driveMin: Math.max(2, Math.round(2 + d2 * 2.2)) });
-  const r1 = (k, base, span) => Math.round((base + rnd(k) * span) * 10) / 10;
-  return {
-    rentType: rnd(20) > 0.25 ? '整租' : '合租',
-    bath: rnd(21) > 0.25 ? '独卫' : '公卫',
-    commute: {
-      transit: { duration: t, distance: dist, kind: rnd(22) > 0.4 ? 'metro_transfer' : 'metro_direct', transfers: rnd(22) > 0.4 ? 1 : 0, route: `步行 ${mk(4, 6)} 分钟至就近地铁站 → 陆家嘴方向（模拟路线）` },
-      drive:   { duration: Math.max(15, t - mk(5, 10)), distance: Math.round((dist + 2) * 10) / 10, kind: 'drive', transfers: 0, route: '高架 + 隧道，早高峰存在拥堵（模拟路线）' },
-      bike:    { duration: t + mk(0, 12), distance: Math.round((dist - 0.4) * 10) / 10, kind: 'bike', transfers: 0, route: '市政非机动车道为主（模拟路线）' },
-      walk:    { duration: Math.round(dist * 12.5), distance: dist, kind: 'walk', transfers: 0, route: '全程步行，不推荐作为日常通勤方式（模拟路线）' },
-    },
-    station: { name: '就近地铁站（模拟）', walk: mk(300, 500), walkMin: mk(4, 6) },
-    amenities: {
-      metro:    poi('就近地铁站（模拟）', r1(4, 0.3, 0.9)),
-      hema:     rnd(5) > 0.25 ? poi('盒马鲜生（模拟门店）', r1(6, 0.5, 4)) : null,
-      aldi:     rnd(7) > 0.4 ? poi('奥乐齐（模拟门店）', r1(8, 0.6, 4)) : null,
-      sam:      rnd(9) > 0.5 ? poi('山姆会员店（模拟门店）', r1(10, 2, 3)) : null,
-      rt:       poi('大润发（模拟门店）', r1(11, 0.8, 3.5)),
-      market:   poi('社区菜市场（模拟）', r1(12, 0.3, 2)),
-      hospital: rnd(13) > 0.2 ? poi('综合医院（模拟）', r1(14, 1, 4)) : null,
-      school:   poi('周边小学（模拟）', r1(15, 0.4, 3)),
-      park:     rnd(16) > 0.2 ? poi('社区公园（模拟）', r1(17, 0.3, 4)) : null,
-    },
-  };
-}
-
-/* ---------- 地图渲染（消费 MapProvider / RouteProvider） ---------- */
-const MAP_W = 1000, MAP_H = 640;
-
-function mapViewBox() {
-  const { cx, cy, scale } = state.mapView;
-  const w = MAP_W / scale, h = MAP_H / scale;
-  return `${clamp(cx - w / 2, -100, MAP_W)} ${clamp(cy - h / 2, -80, MAP_H)} ${w} ${h}`;
-}
+/* ---------- 地图渲染（仅高德真实地图，无模拟地图） ---------- */
 function mapFitAll() {
-  if (state.usingReal && amapMap) {
-    amapMap.setFitView(null, false, [80, 80, 80, 80]);
-    return;
-  }
-  const pts = [...state.listings.map((l) => l.coord), MockMapProvider.companyCoord];
-  fitViewTo(pts, 0.72);
+  if (amapMap) amapMap.setFitView(null, false, [80, 80, 80, 80]);
 }
 function mapFocusSelected() {
-  const l = state.listings.find((x) => x.id === state.selectedId);
-  if (state.usingReal && amapMap) {
-    const sel = amapOverlays.pins.find((p) => p.id === state.selectedId);
-    const targets = [sel && sel.pin, amapOverlays.company].filter(Boolean);
-    if (targets.length === 2) amapMap.setFitView(targets, false, [140, 140, 140, 140]);
-    else amapMap.setFitView(null, false, [80, 80, 80, 80]);
-    return;
-  }
-  if (!l) return mapFitAll();
-  fitViewTo([l.coord, MockMapProvider.companyCoord], 0.6);
+  if (!amapMap) return;
+  const sel = amapOverlays.pins.find((p) => p.id === state.selectedId);
+  const targets = [sel && sel.pin, amapOverlays.company].filter(Boolean);
+  if (targets.length === 2) amapMap.setFitView(targets, false, [140, 140, 140, 140]);
+  else amapMap.setFitView(null, false, [80, 80, 80, 80]);
 }
-function fitViewTo(pts, fill) {
-  const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
-  const w = Math.max(...xs) - Math.min(...xs) || 100;
-  const h = Math.max(...ys) - Math.min(...ys) || 100;
-  state.mapView = {
-    cx: (Math.min(...xs) + Math.max(...xs)) / 2,
-    cy: (Math.min(...ys) + Math.max(...ys)) / 2,
-    scale: clamp(Math.min(MAP_W / w, MAP_H / h) * fill, 0.9, 3.2),
-  };
-}
-function pathFrom(points, smooth) {
-  if (points.length === 4) { // 地铁：家→进站→换乘→公司
-    const [a, b, c, d] = points;
-    return `M${a.x} ${a.y} L${b.x} ${b.y} Q${c.x} ${c.y} ${c.x + (d.x - c.x) * 0.25} ${c.y + (d.y - c.y) * 0.25} L${d.x} ${d.y}`;
-  }
-  const [a, m, b] = points;
-  return smooth ? `M${a.x} ${a.y} Q${m.x} ${m.y} ${b.x} ${b.y}` : `M${a.x} ${a.y} L${m.x} ${m.y} L${b.x} ${b.y}`;
-}
-function mapBaseTexture() {
-  return `
-    <rect x="-200" y="-160" width="1400" height="960" fill="#10201E"/>
-    <g stroke="#1B332F" stroke-width="1.4" fill="none">
-      ${[80, 200, 320, 440, 560].map((y) => `<path d="M-100 ${y} H1100"/>`).join('')}
-      ${[100, 260, 420, 580, 740, 900].map((x) => `<path d="M${x} -100 V740"/>`).join('')}
-    </g>
-    <path d="M545 -60 Q600 140 545 300 Q500 460 575 700" fill="none" stroke="#1C3A38" stroke-width="34" stroke-linecap="round" opacity=".8"/>
-    <path d="M545 -60 Q600 140 545 300 Q500 460 575 700" fill="none" stroke="#26474A" stroke-width="2" stroke-dasharray="2 8" opacity=".6"/>
-    <text x="560" y="330" fill="#3D6266" font-size="15" transform="rotate(76 560 330)">黄 浦 江（示意）</text>`;
-}
+
 function renderMap() {
-  const svg = $('#mapSvg');
-  if (!svg || state.view !== 'step2') return;
-  // 高德真实地图分支：隐藏模拟 SVG，渲染真实底图与覆盖物
-  if (state.usingReal && amapMap) {
-    svg.classList.add('hidden');
-    $('#amapContainer').classList.remove('hidden');
-    renderRealMap();
-    return;
-  }
-  svg.classList.remove('hidden');
-  $('#amapContainer').classList.add('hidden');
-  const company = MockMapProvider.companyCoord;
-  const selId = state.selectedId;
-
-  // 路线：只画选中房源的路线（点击图钉切换）
-  const routeL = state.listings.find((x) => x.id === selId);
-  const routes = routeL ? (() => {
-    const i = state.listings.indexOf(routeL);
-    const r = RouteProvider.plan(routeL.coord, company, state.mapMode, routeL.commute[state.mapMode]);
-    const color = LISTING_COLORS[i % LISTING_COLORS.length];
-    const dash = (state.mapMode === 'bike' || state.mapMode === 'walk') ? 'stroke-dasharray="7 7"' : '';
-    return `<path d="${pathFrom(r.points, true)}" fill="none" stroke="${color}"
-      stroke-width="4.5" opacity="1" stroke-linecap="round" ${dash}/>`;
-  })() : '';
-
-  // 选中路线的站点
-  const selL = state.listings.find((x) => x.id === selId);
-  let stops = '';
-  if (selL) {
-    const r = RouteProvider.plan(selL.coord, company, state.mapMode, selL.commute[state.mapMode]);
-    stops = r.stops.map((s) => `
-      <g><circle cx="${s.p.x}" cy="${s.p.y}" r="7" fill="#F7F6F2" stroke="#18201E" stroke-width="2.5"/>
-      <text x="${s.p.x + 11}" y="${s.p.y + 4}" fill="#F7F6F2" font-size="12">${s.label}</text></g>`).join('');
-  }
-
-  // 房源图钉
-  const pins = state.listings.map((l, i) => {
-    const sel = l.id === selId;
-    const color = LISTING_COLORS[i % LISTING_COLORS.length];
-    const r = sel ? 19 : 15;
-    return `<g data-pin="${l.id}" style="cursor:pointer">
-      ${sel ? `<circle cx="${l.coord.x}" cy="${l.coord.y}" r="30" fill="${color}" opacity=".25"/>` : ''}
-      <circle cx="${l.coord.x}" cy="${l.coord.y}" r="${r}" fill="${color}" stroke="#F7F6F2" stroke-width="2.5"/>
-      <text x="${l.coord.x}" y="${l.coord.y + 5}" text-anchor="middle" fill="#fff" font-size="${sel ? 16 : 13}" font-weight="800">${String.fromCharCode(65 + i)}</text>
-    </g>`;
-  }).join('');
-
-  // 公司图钉
-  const companyPin = `
-    <g>
-      <rect x="${company.x - 16}" y="${company.y - 16}" width="32" height="32" rx="9" fill="#18201E" stroke="#C9A66B" stroke-width="2.5"/>
-      <text x="${company.x}" y="${company.y + 5}" text-anchor="middle" fill="#C9A66B" font-size="14" font-weight="800">司</text>
-      <text x="${company.x}" y="${company.y + 34}" text-anchor="middle" fill="rgba(247,246,242,.75)" font-size="12">公司</text>
-    </g>`;
-
-  svg.setAttribute('viewBox', mapViewBox());
-  svg.innerHTML = mapBaseTexture() + routes + stops + pins + companyPin;
-  renderMapInfo();
-  document.querySelectorAll('#mapModes .map-mode').forEach((b) => {
-    b.classList.toggle('active', b.dataset.mm === state.mapMode);
-  });
+  if (state.view !== 'step2' || !amapMap) return;
+  renderRealMap();
 }
 
 function renderMapInfo() {
   const l = state.listings.find((x) => x.id === state.selectedId);
-  if (!l) { $('#mapInfo').innerHTML = ''; return; }
+  if (!l || !l.commute) { $('#mapInfo').innerHTML = ''; return; }
   const i = state.listings.indexOf(l);
   const opt = l.commute[state.mapMode];
   const cons = modeConservative(state.mapMode, opt);
   const depart = parseTime(state.arriveTime) - cons;
-  const r = RouteProvider.plan(l.coord, MockMapProvider.companyCoord, state.mapMode, opt);
+  const dailyFee = Math.round(MODE_KIND[opt.kind].fee * 2);
   $('#mapInfo').innerHTML = `
     <div class="mi-mode">房源 ${String.fromCharCode(65 + i)} · 推荐${TRANSPORT_LABEL[state.mapMode]}通勤</div>
     <div class="mi-time">${fmtTime(depart)}</div>
     <div class="mi-sub">建议最晚出发 · 保守通勤 ${cons} 分钟</div>
-    <div class="mi-sub">常规 ${opt.duration} 分钟 · ${opt.distance} 公里 · 换乘 ${opt.transfers} 次 · ${r.dailyFee} 元/天</div>`;
+    <div class="mi-sub">常规 ${opt.duration} 分钟 · ${opt.distance} 公里 · 换乘 ${opt.transfers} 次 · ${dailyFee} 元/天</div>`;
 }
 
-/* 结果页 Hero 的小地图（静态预览） */
+/* 结果页 Hero 的小地图（基于真实经纬度的相对方位示意图） */
 function miniMapSvg(c) {
-  const company = MockMapProvider.companyCoord;
-  const r = RouteProvider.plan(c.coord, company, c.rec.mode, c.commute[c.rec.mode]);
-  const xs = [c.coord.x, company.x], ys = [c.coord.y, company.y];
+  const company = state._companyGeo ? lnglatToVirtual(state._companyGeo.lnglat) : { x: 660, y: 290 };
+  const home = c.coord || company;
+  const xs = [home.x, company.x], ys = [home.y, company.y];
   const w = Math.max(Math.abs(xs[0] - xs[1]), 160), h = Math.max(Math.abs(ys[0] - ys[1]), 160);
   const vb = `${Math.min(...xs) - w * 0.35} ${Math.min(...ys) - h * 0.4} ${w * 1.7} ${h * 1.8}`;
   const color = LISTING_COLORS[c.idx % LISTING_COLORS.length];
   return `<svg viewBox="${vb}" preserveAspectRatio="xMidYMid slice">
     <rect x="-2000" y="-2000" width="5000" height="5000" fill="#10201E"/>
-    <path d="M545 -2000 Q600 140 545 300 Q500 460 575 2000" fill="none" stroke="#1C3A38" stroke-width="34" opacity=".8"/>
-    <path d="${pathFrom(r.points, true)}" fill="none" stroke="${color}" stroke-width="5" stroke-linecap="round"/>
-    <circle cx="${c.coord.x}" cy="${c.coord.y}" r="17" fill="${color}" stroke="#F7F6F2" stroke-width="2.5"/>
-    <text x="${c.coord.x}" y="${c.coord.y + 5}" text-anchor="middle" fill="#fff" font-size="14" font-weight="800">${String.fromCharCode(65 + c.idx)}</text>
+    <path d="M${home.x} ${home.y} L${company.x} ${company.y}" fill="none" stroke="${color}" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="${home.x}" cy="${home.y}" r="17" fill="${color}" stroke="#F7F6F2" stroke-width="2.5"/>
+    <text x="${home.x}" y="${home.y + 5}" text-anchor="middle" fill="#fff" font-size="14" font-weight="800">${String.fromCharCode(65 + c.idx)}</text>
     <rect x="${company.x - 15}" y="${company.y - 15}" width="30" height="30" rx="8" fill="#18201E" stroke="#C9A66B" stroke-width="2.5"/>
     <text x="${company.x}" y="${company.y + 5}" text-anchor="middle" fill="#C9A66B" font-size="13" font-weight="800">司</text>
   </svg>`;
@@ -1549,7 +1347,7 @@ function renderDetails() {
             const st2 = amenityStatus(inRange ? a : null);
             return `<div class="amenity-item">
               <div class="a-info"><b>${AMENITY_META[k].label}</b>
-              <span>${inRange ? `${a.name} · ${a.dist}km · 步行约${a.walkMin}分钟 / 驾车约${a.driveMin}分钟` : `${r}km 范围内暂无（模拟数据）`}</span></div>
+              <span>${inRange ? `${a.name} · ${a.dist}km · 步行约${a.walkMin}分钟 / 驾车约${a.driveMin}分钟` : `${r}km 范围内暂无`}</span></div>
               <span class="pill ${st2.cls}">${st2.text}</span>
             </div>`;
           }).join('')}
@@ -1579,7 +1377,7 @@ function renderDetails() {
             ${commuteHtml}
           </div>
           <div>
-            <div class="module-title">周边配套（模拟数据）</div>
+            <div class="module-title">周边配套（高德 POI 实时搜索）</div>
             <div class="range-tabs" data-tabs="${c.id}">
               ${ranges.map((r) => `<button class="range-tab ${r === 1 ? 'active' : ''}" data-r="${r}">${r} km 内</button>`).join('')}
             </div>
@@ -1616,7 +1414,7 @@ const AI_PRESETS = [
   '我更看重学校和医院，应该调整哪些权重？',
   '看房前需要线下核验哪些事项？',
 ];
-const AI_NOTE = '\n\n（以上仅基于页面已有的模拟数据与评分结果进行解释，不构成租房/购房建议；硬约束结果以页面判定为准。）';
+const AI_NOTE = '\n\n（以上仅基于页面已有的真实数据与评分结果进行解释，不构成租房/购房建议；硬约束结果以页面判定为准。）';
 
 function aiAnswer(q) {
   const cs = state.computed;
@@ -1653,7 +1451,7 @@ function aiAnswer(q) {
     return `建议调整：${tips.map((t, i) => `${i + 1}. ${t}`).join('；')}。\n\n注意：我只能提出建议，不会自动修改权重——请在第 3 步「高级设置」中确认调整。${AI_NOTE}`;
   }
   if (/核验|线下|看房|注意|产权|噪音|采光/.test(q)) {
-    return `看房前建议线下核验以下事项（这些不在模拟数据范围内）：\n1. 噪音：早晚高峰临路/临地铁噪音；\n2. 采光：不同时段实地采光与遮挡；\n3. 楼龄与电梯、物业维护状况；\n4. 房屋产权与租约合规性；\n5. 学区资格：本页面学校信息仅为周边教育资源，入学资格请以教育部门及房产政策为准；\n6. 通勤：在目标时段实测一次完整通勤。${AI_NOTE}`;
+    return `看房前建议线下核验以下事项（这些不在线上数据范围内）：\n1. 噪音：早晚高峰临路/临地铁噪音；\n2. 采光：不同时段实地采光与遮挡；\n3. 楼龄与电梯、物业维护状况；\n4. 房屋产权与租约合规性；\n5. 学区资格：本页面学校信息仅为周边教育资源，入学资格请以教育部门及房产政策为准；\n6. 通勤：在目标时段实测一次完整通勤。${AI_NOTE}`;
   }
   // 默认：解释当前最推荐
   const top = order.find((c) => c.status !== 'ineligible');
@@ -1669,7 +1467,7 @@ function aiPush(text, who) {
   if (who === 'bot') {
     const src = document.createElement('span');
     src.className = 'msg-src';
-    src.textContent = '仅解释已有计算结果 · Demo 模拟数据';
+    src.textContent = '仅解释已有计算结果 · 高德真实数据';
     div.appendChild(src);
   }
   $('#aiMessages').appendChild(div);
@@ -1753,18 +1551,18 @@ function bindEvents() {
     l[f] = (f === 'rent' || f === 'area') ? Number(e.target.value) : e.target.value;
   });
   $('#listingList').addEventListener('change', (e) => {
-    // 地址变化 → 真实模式下重新地理编码并刷新通勤/配套；模拟模式仅重新生成虚拟坐标
+    // 地址变化 → 重新走高德地理编码并刷新通勤/配套（无模拟数据，地址为空则等待填写）
     const id = Number(e.target.dataset.id), f = e.target.dataset.f;
     if (id && f === 'address') {
       const l = state.listings.find((x) => x.id === id);
       if (l) {
         l._realSig = null;
-        if (!seedListings().some((s) => s.id === id)) l.coord = MockMapProvider.geocode(l.address, id);
-        if (USE_AMAP) {
+        l._failed = false;
+        if (l.address.trim()) {
           setMapLoading(true);
           ensureRealData().then(() => {
             setMapLoading(false);
-            computeAll(); renderListingCards(); mapFocusSelected(); renderMap(); updateDataBadge();
+            computeAll(); renderListingCards(); mapFocusSelected(); renderMap(); renderDataState();
           });
           return;
         }
@@ -1795,20 +1593,11 @@ function bindEvents() {
     const id = state.nextId++;
     state.listings.push({
       id, name: `新房源 ${String.fromCharCode(64 + state.listings.length + 1)}`,
-      address: '上海市（请填写地址）', rent: 6500, area: 55,
-      layout: '1室1厅', floor: '5/12层', facing: '南', note: '',
-      coord: MockMapProvider.geocode('新房源', id),
-      ...generateMockData(id),
+      address: '', rent: 6500, area: 55,
+      layout: '1室1厅', floor: '5/12层', facing: '南', rentType: '整租', bath: '独卫', note: '',
     });
     state.selectedId = id;
-    computeAll(); renderListingCards(); mapFocusSelected(); renderMap();
-    if (USE_AMAP) {
-      setMapLoading(true);
-      ensureRealData().then(() => {
-        setMapLoading(false);
-        computeAll(); renderListingCards(); mapFocusSelected(); renderMap(); updateDataBadge();
-      });
-    }
+    computeAll(); renderListingCards(); // 填写地址后由 change 事件触发真实数据拉取
   });
 
   // 第 2 步：地图控件
@@ -1818,48 +1607,9 @@ function bindEvents() {
     state.mapMode = btn.dataset.mm;
     renderMap();
   });
-  $('#mapZoomIn').addEventListener('click', () => {
-    if (state.usingReal && amapMap) { amapMap.zoomIn(); return; }
-    state.mapView.scale = clamp(state.mapView.scale * 1.3, 0.9, 4); renderMap();
-  });
-  $('#mapZoomOut').addEventListener('click', () => {
-    if (state.usingReal && amapMap) { amapMap.zoomOut(); return; }
-    state.mapView.scale = clamp(state.mapView.scale / 1.3, 0.9, 4); renderMap();
-  });
+  $('#mapZoomIn').addEventListener('click', () => { if (amapMap) amapMap.zoomIn(); });
+  $('#mapZoomOut').addEventListener('click', () => { if (amapMap) amapMap.zoomOut(); });
   $('#mapFit').addEventListener('click', () => { mapFitAll(); renderMap(); });
-
-  // 地图拖动 + 图钉点击
-  (function bindMapDrag() {
-    const svg = $('#mapSvg');
-    let dragging = false, moved = 0, sx = 0, sy = 0, scx = 0, scy = 0;
-    svg.addEventListener('pointerdown', (e) => {
-      dragging = true; moved = 0; sx = e.clientX; sy = e.clientY;
-      scx = state.mapView.cx; scy = state.mapView.cy;
-      svg.setPointerCapture(e.pointerId);
-    });
-    svg.addEventListener('pointermove', (e) => {
-      if (!dragging) return;
-      const rect = svg.getBoundingClientRect();
-      const k = (MAP_W / state.mapView.scale) / rect.width;
-      const dx = (e.clientX - sx) * k, dy = (e.clientY - sy) * k;
-      moved = Math.max(moved, Math.abs(e.clientX - sx) + Math.abs(e.clientY - sy));
-      state.mapView.cx = scx - dx;
-      state.mapView.cy = scy - dy;
-      svg.setAttribute('viewBox', mapViewBox());
-    });
-    svg.addEventListener('pointerup', (e) => {
-      dragging = false;
-      if (moved < 6) {
-        const pin = e.target.closest('[data-pin]');
-        if (pin) {
-          state.selectedId = Number(pin.dataset.pin);
-          renderListingCards();
-          mapFocusSelected();
-          renderMap();
-        }
-      }
-    });
-  })();
 
   // 第 3 步：偏好卡片墙
   $('#prefWall').addEventListener('click', (e) => {
