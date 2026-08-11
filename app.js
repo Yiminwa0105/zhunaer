@@ -132,10 +132,12 @@ function amapRoute(from, to, mode, city) {
         new AMap.Transfer({ city }).search(origin, dest, (status, result) => {
           if (status !== 'complete' || !result.plans || !result.plans.length) return fail();
           const p = result.plans[0];
-          const lines = [], path = [];
+          const lines = [], path = [], rawNames = [];
           (p.segments || []).forEach((seg) => {
             if (seg.transit && seg.transit.lines && seg.transit.lines.length) {
-              lines.push(String(seg.transit.lines[0].name).replace(/\(.*?\)/g, ''));
+              const raw = String(seg.transit.lines[0].name);
+              rawNames.push(raw);
+              lines.push(raw.replace(/\(.*?\)/g, ''));
             }
             const segPath = (seg.transit && seg.transit.path)
               || (seg.walking && seg.walking.path)
@@ -143,14 +145,16 @@ function amapRoute(from, to, mode, city) {
             (segPath || []).forEach((pt) => path.push(pt));
           });
           const transfers = Math.max(0, lines.length - 1);
+          // 夜班线路检测：线路名含「夜」（夜宵线/夜班线）则不属于工作日早高峰通勤
+          const night = rawNames.some((n) => /夜/.test(n));
           resolve({
             duration: Math.round(p.time / 60),
             distance: Math.round((p.distance / 1000) * 10) / 10,
             kind: transfers > 0 ? 'metro_transfer' : 'metro_direct',
-            transfers,
+            transfers, night,
             route: lines.length
-              ? `乘坐 ${lines.join(' → ')}${transfers ? `，换乘 ${transfers} 次` : '，无需换乘'}（高德实时规划）`
-              : `公交方案全程约 ${(p.distance / 1000).toFixed(1)} 公里（高德实时规划）`,
+              ? `乘坐 ${lines.join(' → ')}${transfers ? `，换乘 ${transfers} 次` : '，无需换乘'}`
+              : `公交方案全程约 ${(p.distance / 1000).toFixed(1)} 公里`,
             path: path.length >= 2 ? path : null,
           });
         });
@@ -166,7 +170,7 @@ function amapRoute(from, to, mode, city) {
             duration: Math.round(r.time / 60),
             distance: Math.round((r.distance / 1000) * 10) / 10,
             kind: mode, transfers: 0,
-            route: `${TRANSPORT_LABEL[mode]}全程约 ${(r.distance / 1000).toFixed(1)} 公里（高德实时规划）`,
+            route: `${TRANSPORT_LABEL[mode]}全程约 ${(r.distance / 1000).toFixed(1)} 公里`,
             path: path.length >= 2 ? path : null,
           });
         });
@@ -256,14 +260,37 @@ async function ensureRealData() {
         l.lnglat = g;
         l.coord = lnglatToVirtual(g);
       }
-      // 4 种通勤方式全部为必需数据，任一失败则视为该房源加载失败
+      // 驾车/骑行/步行为必需数据，任一失败视为该房源加载失败；
+      // 公交允许「查不到可信路线」（如夜间查询只返回夜班线），单独标记不纳入推荐
       const commute = {}, paths = {};
       for (const m of TRANSPORT_MODES) {
         const r = await amapRoute(l.lnglat, company, m, state._companyCity);
-        if (!r) throw new Error(`${TRANSPORT_LABEL[m]}路线规划失败`);
+        if (!r) {
+          if (m === 'transit') {
+            commute.transit = { duration: 0, distance: 0, kind: 'metro_transfer', transfers: 0, route: '', invalid: 'failed', invalidReason: '公交/地铁路线查询失败，数据待查询，未纳入推荐' };
+            continue;
+          }
+          throw new Error(`${TRANSPORT_LABEL[m]}路线规划失败`);
+        }
         commute[m] = { duration: r.duration, distance: r.distance, kind: r.kind, transfers: r.transfers, route: r.route };
         paths[m] = r.path;
+        // 规则三：夜班线路（夜宵/夜班/夜间）不属于工作日通勤，不参与 P50/P90 与推荐
+        if (m === 'transit' && r.night) {
+          commute.transit.invalid = 'night';
+          commute.transit.invalidReason = '当前路线包含夜宵/夜间运营线路（查询时不在日间运营时段），不属于工作日早高峰通勤，已不纳入推荐。公交数据待查询：请在日间运营时段重新打开本页自动重查';
+        }
       }
+      // 规则五：公交合理性校验（不展示、不参与推荐与 P50，标记待核验）
+      const t = commute.transit, d = commute.drive;
+      if (!t.invalid && t.distance < 20 && t.duration > 120) {
+        t.invalid = 'anomaly';
+        t.invalidReason = `通勤距离 ${t.distance} 公里但公交路线需 ${t.duration} 分钟，路线异常，数据待核验，已不纳入推荐`;
+      }
+      if (!t.invalid && d && t.duration > d.duration * 4) {
+        t.invalid = 'unverified';
+        t.invalidReason = '公交路线时长超过驾车 4 倍，路线数据待核验，已不纳入推荐';
+      }
+      l._queriedAt = new Date(); // 诚实标注：路线数据的实际查询时间
       // 周边 POI：搜不到 = 5km 内确实没有（真实结果），不算失败
       const amenities = {};
       for (const [key, kw] of POI_QUERIES) {
@@ -326,17 +353,20 @@ function renderRealMap() {
     if (!l.lnglat) return;
     const color = LISTING_COLORS[i % LISTING_COLORS.length];
     const sel = l.id === state.selectedId;
-    // 路线：只画选中房源的路线（点击图钉切换）
+    // 路线：只画选中房源的路线（点击图钉切换）；无效路线（夜班/异常）不画轨迹
     if (sel) {
-      const path = (l._paths && l._paths[state.mapMode])
+      const opt = l.commute && l.commute[state.mapMode];
+      const path = (!opt || opt.invalid) ? null : (l._paths && l._paths[state.mapMode])
         || [[l.lnglat.lng, l.lnglat.lat], [company.lng, company.lat]];
-      const line = new AMap.Polyline({
-        path, strokeColor: color, strokeWeight: 6, strokeOpacity: 0.95,
-        strokeStyle: (state.mapMode === 'bike' || state.mapMode === 'walk') ? 'dashed' : 'solid',
-        lineJoin: 'round', lineCap: 'round', zIndex: 60,
-      });
-      amapMap.add(line);
-      amapOverlays.routes.push(line);
+      if (path) {
+        const line = new AMap.Polyline({
+          path, strokeColor: color, strokeWeight: 6, strokeOpacity: 0.95,
+          strokeStyle: (state.mapMode === 'bike' || state.mapMode === 'walk') ? 'dashed' : 'solid',
+          lineJoin: 'round', lineCap: 'round', zIndex: 60,
+        });
+        amapMap.add(line);
+        amapOverlays.routes.push(line);
+      }
     }
 
     const pin = new AMap.Marker({
@@ -443,6 +473,12 @@ function fmtTime(min) {
   const m = ((min % 1440) + 1440) % 1440;
   return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 }
+/* 路线数据查询时间（诚实标注数据来源时刻） */
+function fmtQueryTime(d) {
+  if (!d) return '未知';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 /* 归一化为总和 100 的整数百分比 */
 function normalize100(raw) {
   const keys = Object.keys(raw);
@@ -492,6 +528,10 @@ function evaluateMode(l, mode) {
   const opt = l.commute[mode];
   const cons = modeConservative(mode, opt);
   const departMin = parseTime(state.arriveTime) - cons;
+  // 无效路线（夜班线路/异常/待核验/查询失败）：不参与推荐与 P50/P90 计算
+  if (opt.invalid) {
+    return { feasible: false, prefException: false, fails: [opt.invalidReason || '路线无效，未纳入推荐'], cons, departMin, invalid: true };
+  }
   const maxC = state.constraints.maxCommute;
   const earliest = state.constraints.earliestDepart;
   const fails = [];
@@ -506,8 +546,11 @@ function evaluateMode(l, mode) {
     if (opt.duration > R.maxP50) fails.push(`常规 ${opt.duration} 分钟，超过 ${R.maxP50} 分钟`);
     if (cons > R.maxCons) fails.push(`保守 ${cons} 分钟，超过 ${R.maxCons} 分钟`);
   }
-  if (earliest.lv > 0 && departMin < parseTime(earliest.val)) {
-    fails.push(`需 ${fmtTime(departMin)} 出发，早于你的底线 ${earliest.val}`);
+  // 规则五-4：出发时间底线——用户未设置「最早出门」时默认不允许 06:30 前出门；
+  // 用户设置后以其底线为准（设得比 06:30 早 = 明确允许早出门）
+  const floor = earliest.lv > 0 ? parseTime(earliest.val) : 390;
+  if (departMin < floor) {
+    fails.push(earliest.lv > 0 ? `需 ${fmtTime(departMin)} 出发，早于你的底线 ${earliest.val}` : `需 ${fmtTime(departMin)} 出发，早于 06:30，不满足通勤底线`);
   }
   // 例外：用户明确偏好骑行/步行时放宽阈值，但必须提示风险
   const prefException = fails.length > 0 && state.prefTransport === mode && (mode === 'bike' || mode === 'walk');
@@ -524,9 +567,10 @@ function getRecommendedCommute(l) {
   TRANSPORT_MODES.forEach((m) => { evals[m] = evaluateMode(l, m); });
   const feasibleModes = TRANSPORT_MODES.filter((m) => evals[m].feasible);
 
-  // 无合格方式：不推荐任何一种，仅取保守通勤最短的作为“最快可行方式”展示
+  // 无合格方式：不推荐任何一种，仅取保守通勤最短的作为“最快可行方式”展示（无效路线除外）
   if (!feasibleModes.length) {
-    const fastest = TRANSPORT_MODES.reduce((a, b) => (evals[a].cons <= evals[b].cons ? a : b));
+    const pool = TRANSPORT_MODES.filter((m) => !evals[m].invalid);
+    const fastest = (pool.length ? pool : TRANSPORT_MODES).reduce((a, b) => (evals[a].cons <= evals[b].cons ? a : b));
     return { mode: fastest, ...l.commute[fastest], cons: evals[fastest].cons, departMin: evals[fastest].departMin, evals, unsuitable: true };
   }
 
@@ -963,6 +1007,13 @@ function renderMapInfo() {
   if (!l || !l.commute) { $('#mapInfo').innerHTML = ''; return; }
   const i = state.listings.indexOf(l);
   const opt = l.commute[state.mapMode];
+  // 无效路线（夜班/异常/待核验）：不展示时长，只显示原因
+  if (opt.invalid) {
+    $('#mapInfo').innerHTML = `
+      <div class="mi-mode">房源 ${String.fromCharCode(65 + i)} · ${TRANSPORT_LABEL[state.mapMode]}</div>
+      <div class="mi-sub">暂未获得适合工作日早高峰的有效路线。${opt.invalidReason}</div>`;
+    return;
+  }
   const cons = modeConservative(state.mapMode, opt);
   const depart = parseTime(state.arriveTime) - cons;
   const dailyFee = Math.round(MODE_KIND[opt.kind].fee * 2);
@@ -970,7 +1021,8 @@ function renderMapInfo() {
     <div class="mi-mode">房源 ${String.fromCharCode(65 + i)} · 推荐${TRANSPORT_LABEL[state.mapMode]}通勤</div>
     <div class="mi-time">${fmtTime(depart)}</div>
     <div class="mi-sub">建议最晚出发 · 保守通勤 ${cons} 分钟</div>
-    <div class="mi-sub">常规 ${opt.duration} 分钟 · ${opt.distance} 公里 · 换乘 ${opt.transfers} 次 · ${dailyFee} 元/天</div>`;
+    <div class="mi-sub">常规 ${opt.duration} 分钟 · ${opt.distance} 公里 · 换乘 ${opt.transfers} 次 · ${dailyFee} 元/天</div>
+    <div class="mi-sub">高德路线规划 · 查询时间：${fmtQueryTime(l._queriedAt)}</div>`;
 }
 
 /* 结果页 Hero 的小地图（基于真实经纬度的相对方位示意图） */
@@ -1290,6 +1342,14 @@ function renderDetails() {
 
     const commuteHtml = TRANSPORT_MODES.map((m) => {
       const opt = c.commute[m];
+      // 规则六：无效路线（夜班/异常/待核验）不展示 P50/P90，只显示明确的无效原因
+      if (opt.invalid) {
+        return `<div class="commute-opt invalid">
+          <span class="rec-mark warn">不纳入推荐</span>
+          <div class="co-head"><span class="co-mode">${TRANSPORT_LABEL[m]}</span></div>
+          <div class="co-route">暂未获得适合工作日早高峰的有效路线。${opt.invalidReason}</div>
+        </div>`;
+      }
       const cons = modeConservative(m, opt);
       const depart = parseTime(state.arriveTime) - cons;
       const kind = MODE_KIND[opt.kind];
@@ -1332,7 +1392,7 @@ function renderDetails() {
             <span><b>${opt.distance}</b> 公里</span>
             <span><b>${dailyFee}</b> 元/天</span>
           </div>
-          <div class="co-route">${opt.route}（缓冲：波动 ${kind.buffer} + 到楼 ${ARRIVAL_BUFFER} 分钟）</div>
+          <div class="co-route">${opt.route}（高德路线规划 · 查询时间：${fmtQueryTime(c._queriedAt)}；缓冲：波动 ${kind.buffer} + 到楼 ${ARRIVAL_BUFFER} 分钟）</div>
           ${note}
         </div>`;
     }).join('');
