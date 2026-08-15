@@ -102,6 +102,9 @@ const USE_AMAP = typeof window.AMap !== 'undefined';
 const FUTURE_ROUTE_API = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
   ? 'http://127.0.0.1:8787/etd'
   : 'https://zhunaer-etd-proxy.yiminwa0105.workers.dev/etd';
+// 公交详细分段查询（Web服务，经 Worker 代理）：含逐步步行距离明细 + nightflag=0 排除夜班车；
+// 不可用时自动回退 JS API Transfer（只有方案级总步行距离）
+const TRANSIT_API = FUTURE_ROUTE_API ? FUTURE_ROUTE_API.replace(/\/etd$/, '/transit') : '';
 const POI_QUERIES = [
   ['metro', '地铁站'], ['hema', '盒马鲜生'], ['aldi', '奥乐齐'],
   ['sam', '山姆会员店'], ['rt', '大润发'], ['market', '菜市场'],
@@ -123,12 +126,61 @@ function amapGeocode(address) {
   });
 }
 
+/* 公交详细分段（Web服务，经 Worker 代理）：
+ * 逐步拼接「步行 X 米 → 地铁X号线（N 站）→ 步行 X 米」，并解析 polyline 供地图绘制 */
+async function amapTransitDetailed(from, to, city) {
+  if (!TRANSIT_API) return null;
+  try {
+    const res = await fetch(`${TRANSIT_API}?origin=${from.lng},${from.lat}&destination=${to.lng},${to.lat}&city=${encodeURIComponent(city || '上海')}`);
+    if (!res.ok) return null;
+    const d = await res.json();
+    if (d.status !== '1' || !d.route || !d.route.transits || !d.route.transits.length) return null;
+    const p = d.route.transits[0];
+    const parts = [], lines = [], rawNames = [], path = [];
+    const addPolyline = (pl) => String(pl || '').split(';').forEach((pt) => {
+      const [x, y] = pt.split(',').map(Number);
+      if (x && y) path.push([x, y]);
+    });
+    (p.segments || []).forEach((seg) => {
+      const walkD = Math.round(((seg.walking && seg.walking.steps) || [])
+        .reduce((s, st) => s + Number(st.distance || 0), 0));
+      if (walkD > 1) parts.push(`步行 ${walkD} 米`); // ≤1 米多为站内换乘，忽略
+      ((seg.walking && seg.walking.steps) || []).forEach((st) => addPolyline(st.polyline));
+      const bl = seg.bus && seg.bus.buslines && seg.bus.buslines[0];
+      if (bl) {
+        rawNames.push(String(bl.name));
+        const name = String(bl.name).replace(/\(.*?\)/g, '');
+        lines.push(name);
+        const stops = bl.via_num !== undefined && bl.via_num !== '' ? Number(bl.via_num)
+          : (bl.via_stops ? bl.via_stops.length : null);
+        parts.push(`${name}${stops ? `（${stops} 站）` : ''}`);
+        addPolyline(bl.polyline);
+      }
+    });
+    const transfers = Math.max(0, lines.length - 1);
+    return {
+      duration: Math.round(Number(p.duration) / 60),
+      distance: Math.round((Number(p.distance) / 1000) * 10) / 10,
+      kind: transfers > 0 ? 'metro_transfer' : 'metro_direct',
+      transfers,
+      night: rawNames.some((n) => /夜/.test(n)), // nightflag=0 之外的兜底检测
+      route: parts.length
+        ? `${parts.join(' → ')}${transfers ? `，换乘 ${transfers} 次` : '，无需换乘'}`
+        : `公交方案全程约 ${(Number(p.distance) / 1000).toFixed(1)} 公里`,
+      path: path.length >= 2 ? path : null,
+    };
+  } catch (e) { return null; }
+}
+
 function amapRoute(from, to, mode, city) {
   return new Promise((resolve) => {
     const fail = () => resolve(null);
     try {
       const origin = [from.lng, from.lat], dest = [to.lng, to.lat];
       if (mode === 'transit') {
+        // 优先 Web服务详细分段；不可用（本地 wrangler 未启动/线上代理不通）回退 JS API
+        amapTransitDetailed(from, to, city).then((det) => {
+          if (det) return resolve(det);
         new AMap.Transfer({ city }).search(origin, dest, (status, result) => {
           if (status !== 'complete' || !result.plans || !result.plans.length) return fail();
           const p = result.plans[0];
@@ -174,6 +226,7 @@ function amapRoute(from, to, mode, city) {
             path: path.length >= 2 ? path : null,
           });
         });
+        }); // 结束 amapTransitDetailed(...).then 的回退分支
       } else {
         const Svc = { drive: AMap.Driving, walk: AMap.Walking, bike: AMap.Riding }[mode];
         new Svc().search(origin, dest, (status, result) => {
