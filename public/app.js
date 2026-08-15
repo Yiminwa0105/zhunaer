@@ -87,7 +87,8 @@ const AMENITY_META = {
   sam: { label: '山姆' }, rt: { label: '大润发' }, market: { label: '菜场' },
   hospital: { label: '医院' }, school: { label: '学校' }, park: { label: '公园' },
 };
-const LISTING_COLORS = ['#2E8B72', '#C9A66B', '#5B7FB8', '#8A6BB8', '#C26A8A'];
+/* 高饱和亮色：在 darkblue 深色地图上足够醒目，卡片/结果页同步使用保持一致 */
+const LISTING_COLORS = ['#FF6B6B', '#FFB020', '#4ADE80', '#F472B6', '#A78BFA'];
 
 /* =========================================================
  * 高德真实地图 Provider（JS API 2.0）
@@ -446,13 +447,21 @@ function renderRealMap() {
       const path = cleanPath.length >= 2
         ? cleanPath
         : [[l.lnglat.lng, l.lnglat.lat], [company.lng, company.lat]];
+      // 白色描边 + 彩色芯线：在深色地图上把路线从底图中"托"出来
+      const dashed = state.mapMode === 'bike' || state.mapMode === 'walk';
+      const casing = new AMap.Polyline({
+        path, strokeColor: '#FFFFFF', strokeWeight: 11, strokeOpacity: 0.92,
+        strokeStyle: 'solid', lineJoin: 'round', lineCap: 'round', zIndex: 58,
+      });
       const line = new AMap.Polyline({
-        path, strokeColor: color, strokeWeight: 6, strokeOpacity: 0.95,
-        strokeStyle: (state.mapMode === 'bike' || state.mapMode === 'walk') ? 'dashed' : 'solid',
+        path, strokeColor: color, strokeWeight: 6, strokeOpacity: 1,
+        strokeStyle: dashed ? 'dashed' : 'solid',
+        strokeDasharray: dashed ? [14, 10] : undefined,
         lineJoin: 'round', lineCap: 'round', zIndex: 60,
       });
+      amapMap.add(casing);
       amapMap.add(line);
-      amapOverlays.routes.push(line);
+      amapOverlays.routes.push(casing, line);
     }
 
     const pin = new AMap.Marker({
