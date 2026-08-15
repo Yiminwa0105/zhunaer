@@ -290,7 +290,6 @@ async function ensureRealData() {
         t.invalid = 'unverified';
         t.invalidReason = '公交路线时长超过驾车 4 倍，路线数据待核验，已不纳入推荐';
       }
-      l._queriedAt = new Date(); // 诚实标注：路线数据的实际查询时间
       // 周边 POI：搜不到 = 5km 内确实没有（真实结果），不算失败
       const amenities = {};
       for (const [key, kw] of POI_QUERIES) {
@@ -472,12 +471,6 @@ function parseTime(t) { const [h, m] = String(t).split(':').map(Number); return 
 function fmtTime(min) {
   const m = ((min % 1440) + 1440) % 1440;
   return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
-}
-/* 路线数据查询时间（诚实标注数据来源时刻） */
-function fmtQueryTime(d) {
-  if (!d) return '未知';
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 /* 归一化为总和 100 的整数百分比 */
 function normalize100(raw) {
@@ -1021,8 +1014,7 @@ function renderMapInfo() {
     <div class="mi-mode">房源 ${String.fromCharCode(65 + i)} · 推荐${TRANSPORT_LABEL[state.mapMode]}通勤</div>
     <div class="mi-time">${fmtTime(depart)}</div>
     <div class="mi-sub">建议最晚出发 · 保守通勤 ${cons} 分钟</div>
-    <div class="mi-sub">常规 ${opt.duration} 分钟 · ${opt.distance} 公里 · 换乘 ${opt.transfers} 次 · ${dailyFee} 元/天</div>
-    <div class="mi-sub">高德路线规划 · 查询时间：${fmtQueryTime(l._queriedAt)}</div>`;
+    <div class="mi-sub">常规 ${opt.duration} 分钟 · ${opt.distance} 公里 · 换乘 ${opt.transfers} 次 · ${dailyFee} 元/天</div>`;
 }
 
 /* 结果页 Hero 的小地图（基于真实经纬度的相对方位示意图） */
@@ -1392,7 +1384,7 @@ function renderDetails() {
             <span><b>${opt.distance}</b> 公里</span>
             <span><b>${dailyFee}</b> 元/天</span>
           </div>
-          <div class="co-route">${opt.route}（高德路线规划 · 查询时间：${fmtQueryTime(c._queriedAt)}；缓冲：波动 ${kind.buffer} + 到楼 ${ARRIVAL_BUFFER} 分钟）</div>
+          <div class="co-route">${opt.route}（缓冲：波动 ${kind.buffer} + 到楼 ${ARRIVAL_BUFFER} 分钟）</div>
           ${note}
         </div>`;
     }).join('');
