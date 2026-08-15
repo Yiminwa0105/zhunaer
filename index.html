@@ -4,7 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>住哪儿｜别再凭感觉选房</title>
-<link rel="stylesheet" href="styles-v2.css">
+<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/styles-v2.css">
 </head>
 <body>
 
@@ -23,9 +24,41 @@
       <span class="prog-sep"></span>
       <button class="prog-item" data-goto="result"><i>04</i> 选房报告</button>
     </nav>
-    <div class="demo-badge">真实数据加载中…</div>
+    <div class="topbar-right">
+      <span class="save-status" id="saveStatus"></span>
+      <button class="proj-btn" id="projBtn" title="我的方案">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        我的方案
+      </button>
+      <div class="demo-badge">真实数据加载中…</div>
+    </div>
   </div>
 </header>
+
+<!-- 我的方案抽屉 -->
+<div class="drawer-mask hidden" id="drawerMask"></div>
+<aside class="proj-drawer" id="projDrawer" aria-label="我的方案">
+  <div class="pd-head">
+    <h3>我的方案</h3>
+    <button class="pd-close" id="pdClose">×</button>
+  </div>
+  <div class="pd-privacy">
+    你的方案仅保存在当前浏览器和设备中，不会自动上传，也不会跨设备同步。<br>
+    清除浏览器数据、更换浏览器或更换设备后，本地方案可能无法恢复。建议定期导出备份。
+  </div>
+  <div class="pd-actions">
+    <button class="btn-next" id="pdNew">＋ 新建选房方案</button>
+    <button class="link-btn" id="pdImport">导入备份</button>
+    <input type="file" id="pdImportFile" accept=".json,application/json" class="hidden">
+  </div>
+  <div class="pd-list" id="pdList"></div>
+  <div class="pd-export-note">导出文件可能含有地址、预算和收入等个人信息。请妥善保管，不要随意分享。</div>
+</aside>
+
+<!-- 通用确认/命名弹窗 -->
+<div class="modal-mask hidden" id="modalMask">
+  <div class="modal" id="modalBox"></div>
+</div>
 
 <main id="app">
 
@@ -260,28 +293,14 @@
 
 </main>
 
-<!-- AI 决策助手 -->
-<button class="ai-fab hidden" id="aiFab" title="AI 决策助手">AI</button>
-<aside class="ai-panel" id="aiPanel">
-  <div class="ai-head">
-    <div>
-      <h3>AI 决策助手</h3>
-      <p>只解释已有计算结果，不参与评分，不构成承诺</p>
-    </div>
-    <button class="ai-close" id="aiClose">×</button>
-  </div>
-  <div class="ai-quick" id="aiQuick"></div>
-  <div class="ai-messages" id="aiMessages"></div>
-  <div class="ai-input-row">
-    <input type="text" id="aiInput" placeholder="例如：为什么这套房排第一？">
-    <button class="btn-send" id="aiSend">发送</button>
-  </div>
-</aside>
+<!-- AI 决策助手（React Island，挂载到 #aiRoot） -->
+<div id="aiRoot"></div>
 
 <script>
   window._AMapSecurityConfig = { securityJsCode: '1b51354d1e30ebcb091c3b38a2758f0f' };
 </script>
 <script src="https://webapi.amap.com/maps?v=2.0&key=c7827725f3d256bfc5cd4c5592cc0d69&plugin=AMap.Geocoder,AMap.Transfer,AMap.Driving,AMap.Walking,AMap.Riding,AMap.PlaceSearch"></script>
-<script src="app.js"></script>
+<script src="/app.js"></script>
+<script type="module" src="/src/assistant/main.jsx"></script>
 </body>
 </html>

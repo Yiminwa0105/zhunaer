@@ -200,6 +200,31 @@ body {
 .ai-fab:hover { background: var(--emerald-dark); }
 .ai-head { background: #1D1D1F; }
 
+/* AI 助手（React Island）：工具调用行 / 状态 / 错误 / 引用卡片 */
+.ai-tool-line { display: block; margin-top: 6px; font-size: 11px; color: var(--text-2); }
+.ai-status { color: var(--text-2); font-style: italic; }
+.ai-error { background: #FEF1F0 !important; color: #C0352B !important; display: flex; align-items: center; gap: 8px; }
+.ai-cites { margin-top: 10px; border-top: 1px dashed var(--line); padding-top: 8px; }
+.ai-cites-title { font-size: 11px; color: var(--text-2); margin-bottom: 6px; }
+.ai-cite {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  background: #fff; border: 1px solid var(--line); border-radius: 10px;
+  padding: 8px 10px; margin-bottom: 6px; font-size: 12px;
+  transition: border-color .16s var(--ease-out), box-shadow .16s var(--ease-out), transform .16s var(--ease-out);
+}
+.ai-cite:hover { border-color: var(--emerald); box-shadow: var(--shadow); }
+.ai-cite:active { transform: scale(.98); }
+.ai-cite-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.ai-cite-head b { font-size: 12.5px; }
+.ai-cite-rank { color: var(--emerald); font-weight: 600; white-space: nowrap; }
+.ai-cite-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 4px; color: var(--text-2); font-size: 11px; }
+
+/* 引用卡片点击后，结果页对应房源详情高亮 */
+.detail-card.ai-highlight {
+  box-shadow: 0 0 0 2px var(--emerald), var(--shadow-lg);
+  transition: box-shadow .3s var(--ease-out);
+}
+
 /* ---------- 可访问性（skills §14） ---------- */
 @media (prefers-reduced-transparency: reduce) {
   .topbar, .map-modes, .map-info, .float-chip {
@@ -344,3 +369,166 @@ body {
   box-shadow: 0 2px 10px rgba(0, 113, 227, .30);
 }
 .prog-item.current i { color: rgba(255, 255, 255, .75); }
+
+/* =========================================================
+ * 本地方案保存：顶栏状态 + 我的方案抽屉 + 弹窗 + 通知条
+ * ========================================================= */
+.topbar-right { display: flex; align-items: center; gap: 12px; }
+
+/* 自动保存状态：小型文字 + 图标，不弹窗 */
+.save-status { font-size: 12px; color: #86868B; white-space: nowrap; }
+.save-status.saved { color: #30A46C; }
+.save-status.saving { color: #86868B; }
+.save-status.error { color: var(--risk); cursor: pointer; text-decoration: underline; }
+
+/* 「我的方案」入口：低调但易发现 */
+.proj-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: none; border: 1px solid rgba(0, 0, 0, .14);
+  color: var(--text-2); font-size: 13px;
+  padding: 6px 14px; border-radius: 999px; cursor: pointer;
+  transition: color .16s var(--ease-out), border-color .16s var(--ease-out), transform .16s var(--ease-out);
+}
+.proj-btn:hover { color: var(--text); border-color: var(--text); }
+.proj-btn:active { transform: scale(.97); }
+
+/* 抽屉遮罩与主体 */
+.drawer-mask {
+  position: fixed; inset: 0; z-index: 90;
+  background: rgba(0, 0, 0, .28);
+  opacity: 1; transition: opacity .22s var(--ease-out);
+}
+.drawer-mask.hidden { opacity: 0; pointer-events: none; }
+.proj-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 91;
+  width: min(430px, 92vw);
+  background: #F5F5F7;
+  box-shadow: -16px 0 48px rgba(0, 0, 0, .16);
+  transform: translateX(105%);
+  transition: transform .3s var(--ease-drawer);
+  display: flex; flex-direction: column;
+  padding: 22px 22px 16px;
+  overflow-y: auto;
+}
+.proj-drawer.open { transform: translateX(0); }
+.pd-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.pd-head h3 { font-size: 20px; font-weight: 700; letter-spacing: -.01em; }
+.pd-close {
+  background: none; border: none; font-size: 24px; line-height: 1;
+  color: #86868B; cursor: pointer; padding: 4px 8px;
+}
+.pd-close:hover { color: var(--text); }
+
+/* 隐私提示：浅色信息卡，语气清晰 */
+.pd-privacy {
+  background: var(--emerald-bg);
+  border-left: 3px solid var(--emerald);
+  color: var(--text-2);
+  font-size: 12.5px; line-height: 1.7;
+  padding: 12px 14px; border-radius: 12px;
+  margin-bottom: 14px;
+}
+.pd-actions { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }
+.pd-actions .btn-next { padding: 11px 22px; font-size: 14px; }
+.pd-export-note { font-size: 11.5px; color: #A1A1A6; line-height: 1.6; margin-top: 14px; }
+
+/* 方案卡：简洁可扫读 */
+.pd-list { display: flex; flex-direction: column; gap: 12px; }
+.proj-card {
+  background: #fff; border-radius: 18px;
+  padding: 16px 18px 12px;
+  box-shadow: var(--shadow);
+  border: 1.5px solid transparent;
+}
+.proj-card.current { border-color: var(--emerald); }
+.pc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.pc-title { font-size: 15.5px; font-weight: 700; color: var(--text); }
+.pc-current-tag {
+  font-size: 11px; color: var(--emerald);
+  background: var(--emerald-bg);
+  padding: 2px 8px; border-radius: 999px; font-weight: 600;
+}
+.pc-meta { font-size: 12.5px; color: var(--text-2); line-height: 1.6; }
+.pc-rec { font-size: 12.5px; color: var(--emerald-dark); margin-top: 2px; }
+.pc-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid #F0F0F2;
+}
+.pc-local { font-size: 11px; color: #30A46C; }
+.pc-local::before { content: '● '; }
+.pc-ops { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.pc-ops button {
+  background: none; border: none; padding: 0;
+  font-size: 12px; color: var(--emerald); cursor: pointer;
+}
+.pc-ops button:hover { text-decoration: underline; }
+.pc-ops .op-del { color: var(--risk); opacity: .85; } /* 删除：红色但不过度抢眼 */
+
+/* 空状态 */
+.pd-empty {
+  text-align: center; color: #A1A1A6;
+  padding: 48px 20px;
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
+}
+.pd-empty p { font-size: 14px; line-height: 1.8; color: var(--text-2); }
+.pd-empty .btn-next { padding: 12px 26px; font-size: 14px; }
+
+/* 通用弹窗 */
+.modal-mask {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(0, 0, 0, .32);
+  display: flex; align-items: center; justify-content: center;
+}
+.modal-mask.hidden { display: none; }
+.modal {
+  background: #fff; border-radius: 20px;
+  padding: 26px 28px;
+  width: min(400px, 90vw);
+  box-shadow: var(--shadow-lg);
+  animation: fadeUp .22s var(--ease-out) both;
+}
+.modal h4 { font-size: 17px; font-weight: 700; margin-bottom: 10px; letter-spacing: -.01em; }
+.modal-sub { font-size: 13.5px; color: var(--text-2); line-height: 1.7; }
+.modal input[type="text"] {
+  width: 100%; box-sizing: border-box;
+  border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px 14px; font-size: 15px; margin: 6px 0 4px;
+  outline: none;
+}
+.modal input[type="text"]:focus { border-color: var(--emerald); }
+.modal-err { font-size: 12px; color: var(--risk); margin-bottom: 4px; }
+.modal-btns { display: flex; justify-content: flex-end; gap: 12px; margin-top: 18px; }
+.modal-btns .btn-next { padding: 11px 26px; font-size: 14px; }
+.modal-btns .btn-back { padding: 10px 20px; font-size: 14px; }
+.btn-danger {
+  background: none; border: 1px solid var(--risk);
+  color: var(--risk); border-radius: 999px;
+  padding: 10px 22px; font-size: 14px; cursor: pointer;
+  transition: background-color .16s var(--ease-out), color .16s var(--ease-out), transform .16s var(--ease-out);
+}
+.btn-danger:hover { background: var(--risk); color: #fff; }
+.btn-danger:active { transform: scale(.97); }
+
+/* 一次性通知条（恢复提示 / 过期数据提醒） */
+.app-notice {
+  position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+  z-index: 95; max-width: min(640px, 92vw);
+  display: flex; align-items: center; gap: 14px;
+  background: rgba(29, 29, 31, .94); color: #F5F5F7;
+  font-size: 13px; line-height: 1.6;
+  padding: 12px 18px; border-radius: 14px;
+  box-shadow: var(--shadow-lg);
+  animation: fadeUp .26s var(--ease-out) both;
+}
+.app-notice .an-text { flex: 1; }
+.app-notice .an-action {
+  background: var(--emerald); color: #fff; border: none;
+  border-radius: 999px; padding: 7px 16px;
+  font-size: 12.5px; cursor: pointer; white-space: nowrap;
+}
+.app-notice .an-close {
+  background: none; border: none; color: #A1A1A6;
+  font-size: 18px; cursor: pointer; padding: 0 2px; line-height: 1;
+}
+.app-notice .an-close:hover { color: #fff; }

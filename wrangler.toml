@@ -1,6 +1,14 @@
 name = "zhunaer-etd-proxy"
 main = "worker.js"
 compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
 
-# Web服务 Key 不要写在这里，用命令配置为密钥：
-#   npx wrangler secret put AMAP_WEB_KEY
+# 静态站点（Vite 构建产物）由同一 Worker 托管，AI 接口为同源 /api/ai/assistant
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+
+# 密钥不要写在这里，用命令配置：
+#   npx wrangler secret put AMAP_WEB_KEY      # 高德 Web服务 Key（/etd、/transit 代理）
+#   npx wrangler secret put DEEPSEEK_API_KEY  # DeepSeek 模型 Key（/api/ai/assistant）
+# 本地开发：在 .dev.vars 中配置同名变量（已被 .gitignore 忽略）

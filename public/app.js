@@ -1439,7 +1439,8 @@ function showView(name) {
   document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
   $(`#view-${name}`).classList.add('active');
   $('#topbar').classList.toggle('hidden', name === 'welcome');
-  $('#aiFab').classList.toggle('hidden', name !== 'result');
+  // 通知 React AI 助手面板当前视图（AI 入口仅在结果页显示）
+  window.dispatchEvent(new CustomEvent('zhunaer:viewchange', { detail: name }));
   // 进度条状态
   const idx = VIEW_ORDER.indexOf(name);
   document.querySelectorAll('.prog-item').forEach((el) => {
@@ -1917,6 +1918,7 @@ function renderDetails() {
     const st = STATUS_META[c.status];
     const card = document.createElement('div');
     card.className = 'detail-card' + (c.status === 'ineligible' ? ' ineligible' : '');
+    card.dataset.listingId = c.id; // 供 AI 引用卡片定位高亮
 
     const commuteNotice = c.rec.unsuitable ? `
       <div class="commute-warning">
@@ -2062,86 +2064,99 @@ function renderResult() {
 }
 
 /* =========================================================
- * AI 决策助手（只解释已有结构化结果，不参与计算）
+ * AI 选房助手 · 真实数据适配器
+ * 只读 state.computed（页面已有的评分/通勤/硬约束结果是唯一事实来源），
+ * 整理为可 JSON 序列化的精简快照，供 AI 接口的 Tool 查询，不参与任何计算。
  * ========================================================= */
-const AI_PRESETS = [
-  '如果我不想早于 07:30 出门，哪些房源还能选？',
-  '为什么这套房排第一？',
-  '标准推荐和按我的偏好排名为什么不一样？',
-  '我更看重学校和医院，应该调整哪些权重？',
-  '看房前需要线下核验哪些事项？',
-];
-const AI_NOTE = '\n\n（以上仅基于页面已有的真实数据与评分结果进行解释，不构成租房/购房建议；硬约束结果以页面判定为准。）';
+const AMENITY_LABEL = {
+  metro: '地铁站', hema: '盒马鲜生', aldi: '奥乐齐', sam: '山姆会员店',
+  rt: '大润发', market: '菜市场', hospital: '医院', school: '小学', park: '公园',
+};
+const SEV_LABEL = { ok: '满足', minor: '轻微超出', major: '不满足' };
 
-function aiAnswer(q) {
-  const cs = state.computed;
+function assistantListing(c) {
   const ranks = currentRanks();
-  const order = currentOrder();
-  const name = (c) => `房源 ${String.fromCharCode(65 + c.idx)}（${c.name}）`;
-  const w = state.weights;
-
-  if (/出门|起床|早起/.test(q)) {
-    const m = q.match(/(\d{1,2})\s*[:：点]\s*(\d{2})/);
-    const limit = m ? parseInt(m[1], 10) * 60 + parseInt(m[2], 10) : parseTime('07:30');
-    const ok = cs.filter((c) => c.departMin >= limit);
-    const no = cs.filter((c) => c.departMin < limit);
-    const t = fmtTime(limit);
-    const head = ok.length
-      ? `不早于 ${t} 出门还能选：${ok.map((c) => `${name(c)}（${TRANSPORT_LABEL[c.rec.mode]}保守 ${c.rec.cons} 分钟，最晚 ${fmtTime(c.departMin)} 出发）`).join('；')}。`
-      : `按当前数据，所有房源都需要在 ${t} 前出发（基于保守通勤时间）。`;
-    const tail = no.length ? `\n\n需要排除：${no.map((c) => `${name(c)} 需 ${fmtTime(c.departMin)} 出发`).join('；')}。` : '';
-    return head + tail + AI_NOTE;
-  }
-  if (/差异|不一样|不同|排名变化|为什么.*排名|排名.*为什么/.test(q)) {
-    const diffs = cs.filter((c) => state.stdRanks[c.id] !== state.personalRanks[c.id]);
-    if (!diffs.length) return `当前两种模式下排名完全一致，因为你的偏好权重与标准权重相同。在第 3 步选择偏好或调整权重后，这里会解释排名变化原因。${AI_NOTE}`;
-    return `两种模式的排名差异来自权重不同（数据与硬约束完全一致）：\n${diffs.map((c) =>
-      `· ${name(c)}：标准第 ${state.stdRanks[c.id]} 名 → 偏好第 ${state.personalRanks[c.id]} 名。${diffReason(c)}。`).join('\n')}${AI_NOTE}`;
-  }
-  if (/权重|调整|更看重|重视/.test(q)) {
-    const tips = [];
-    if (/学校|教育|学区/.test(q)) tips.push('把「教育资源」权重从 10% 提高到 20% 左右');
-    if (/医院/.test(q)) tips.push('在「生活便利」细项中提高「医院」权重');
-    if (/地铁|通勤|出门/.test(q)) tips.push('提高「通勤」权重，并在通勤细项中提高「地铁优先 / 最晚出发时间」');
-    if (/便宜|预算|成本|租金/.test(q)) tips.push('提高「成本」权重，或把预算设为「必须满足」的硬约束');
-    if (!tips.length) tips.push('可以告诉我你看重什么（如学校、医院、地铁、预算），我会建议对应权重');
-    return `建议调整：${tips.map((t, i) => `${i + 1}. ${t}`).join('；')}。\n\n注意：我只能提出建议，不会自动修改权重——请在第 3 步「高级设置」中确认调整。${AI_NOTE}`;
-  }
-  if (/核验|线下|看房|注意|产权|噪音|采光/.test(q)) {
-    return `看房前建议线下核验以下事项（这些不在线上数据范围内）：\n1. 噪音：早晚高峰临路/临地铁噪音；\n2. 采光：不同时段实地采光与遮挡；\n3. 楼龄与电梯、物业维护状况；\n4. 房屋产权与租约合规性；\n5. 学区资格：本页面学校信息仅为周边教育资源，入学资格请以教育部门及房产政策为准；\n6. 通勤：在目标时段实测一次完整通勤。${AI_NOTE}`;
-  }
-  // 默认：解释当前最推荐
-  const top = order.find((c) => c.status !== 'ineligible');
-  if (!top) return `当前没有满足全部底线的房源，因此无法给出最推荐。建议返回第 1 步放宽底线。${AI_NOTE}`;
-  const ex = ruleExplain(top);
-  return `${name(top)}在${state.mode === 'standard' ? '标准推荐' : '按我的偏好'}模式下排名第 ${ranks[top.id]}（综合适配分 ${scoreOf(top, w)}）：\n${ex.bullets.map((b) => '· ' + b).join('\n')}\n\n权重构成：${DIMS.map((d) => `${d.label} ${w[d.key]}%`).join(' / ')}。${AI_NOTE}`;
+  const amenities = {};
+  Object.entries(c.amenities || {}).forEach(([k, v]) => {
+    if (!v) return;
+    amenities[k] = { name: v.name, distKm: Math.round(v.dist * 10) / 10, walkMin: v.walkMin };
+  });
+  return {
+    id: c.id,
+    letter: String.fromCharCode(65 + c.idx), // 房源 A/B/C…
+    name: c.name,
+    address: c.address,
+    rent: c.rent,
+    area: c.area,
+    layout: c.layout,
+    floor: c.floor,
+    facing: c.facing,
+    rentType: c.rentType,
+    note: c.note || '',
+    rank: ranks[c.id],
+    score: scoreOf(c, state.weights),
+    status: c.status, // eligible / conditional / ineligible
+    statusLabel: STATUS_META[c.status].text,
+    dimScores: c.dimScores,
+    monthlyCost: c.actual,          // 租金 + 估算水电物业
+    totalMonthlyCost: c.total,      // 再 + 通勤月费用
+    commute: {
+      mode: c.rec.mode,
+      modeLabel: TRANSPORT_LABEL[c.rec.mode],
+      conservativeMinutes: c.rec.cons,
+      durationMinutes: c.rec.duration,
+      distanceKm: c.rec.distance,
+      transfers: c.rec.transfers,
+      latestDeparture: fmtTime(c.departMin),
+      unsuitable: !!c.rec.unsuitable,
+    },
+    station: c.station
+      ? { name: c.station.name, walkMeters: c.station.walk, walkMin: c.station.walkMin }
+      : null,
+    amenities,
+    hardConstraintResults: (c.checks || []).map((ch) => ({
+      label: ch.label, result: SEV_LABEL[ch.sev] || ch.sev, detail: ch.text,
+    })),
+    dataStatus: 'ok',
+  };
 }
 
-function aiPush(text, who) {
-  const div = document.createElement('div');
-  div.className = `msg ${who}`;
-  div.textContent = text;
-  if (who === 'bot') {
-    const src = document.createElement('span');
-    src.className = 'msg-src';
-    src.textContent = '仅解释已有计算结果 · 高德真实数据';
-    div.appendChild(src);
-  }
-  $('#aiMessages').appendChild(div);
-  $('#aiMessages').scrollTop = $('#aiMessages').scrollHeight;
-}
-function aiOpen() {
-  $('#aiPanel').classList.add('open');
-  if (!$('#aiMessages').children.length) {
-    aiPush('你好，我是你的选房决策助手。我只基于页面已有的房源数据与评分结果做解释，不参与打分，也不会编造地图或学区信息。可以点击下方快捷问题试试。', 'bot');
-  }
-}
-function aiAsk(q) {
-  if (!q.trim()) return;
+/* 当前页面真实计算结果 → AI 上下文（最多 5 套，按当前排名排序） */
+function buildAssistantContext() {
   if (!state.computed.length) computeAll();
-  aiPush(q, 'user');
-  setTimeout(() => aiPush(aiAnswer(q), 'bot'), 350);
+  const order = currentOrder().slice(0, 5);
+  const listings = order.map(assistantListing);
+  // 高德数据加载失败、未参与评分的房源也告知 AI（标记待核验，不编造其数据）
+  state.listings.forEach((l) => {
+    if (l._failed && listings.length < 5) {
+      listings.push({
+        id: l.id, name: l.name, address: l.address, rent: l.rent, area: l.area,
+        layout: l.layout, dataStatus: 'pending_verification',
+      });
+    }
+  });
+  return {
+    company: state.company,
+    budget: state.budget,
+    arriveTime: state.arriveTime,
+    mode: state.mode === 'standard' ? '标准推荐' : '按我的偏好',
+    weights: { ...state.weights },
+    dataFetchedAt: state.dataFetchedAt,
+    listings,
+  };
 }
+window.getAssistantContext = buildAssistantContext;
+
+/* 引用卡片点击 → 定位并高亮结果页对应房源详情 */
+window.highlightListing = function (id) {
+  const card = document.querySelector(`[data-listing-id="${id}"]`);
+  if (!card) return;
+  state.collapsed[id] = true; // 展开详情
+  card.querySelector('.detail-body')?.classList.remove('hidden');
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  card.classList.add('ai-highlight');
+  setTimeout(() => card.classList.remove('ai-highlight'), 2400);
+};
 
 /* =========================================================
  * 事件绑定与初始化
@@ -2379,19 +2394,9 @@ function bindEvents() {
     }
   });
 
-  // AI 面板
-  $('#aiFab').addEventListener('click', aiOpen);
-  $('#aiOpenBtn').addEventListener('click', aiOpen);
-  $('#aiClose').addEventListener('click', () => $('#aiPanel').classList.remove('open'));
-  $('#aiSend').addEventListener('click', () => { aiAsk($('#aiInput').value); $('#aiInput').value = ''; });
-  $('#aiInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') { aiAsk($('#aiInput').value); $('#aiInput').value = ''; } });
-  const quick = $('#aiQuick');
-  AI_PRESETS.forEach((q) => {
-    const b = document.createElement('button');
-    b.className = 'chip';
-    b.textContent = q;
-    b.addEventListener('click', () => aiAsk(q));
-    quick.appendChild(b);
+  // AI 面板（React Island）：结果页「向 AI 追问」按钮 → 通知面板打开
+  $('#aiOpenBtn').addEventListener('click', () => {
+    window.dispatchEvent(new CustomEvent('zhunaer:open-assistant'));
   });
 
   // 我的方案抽屉
