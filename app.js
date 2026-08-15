@@ -132,12 +132,19 @@ function amapRoute(from, to, mode, city) {
         new AMap.Transfer({ city }).search(origin, dest, (status, result) => {
           if (status !== 'complete' || !result.plans || !result.plans.length) return fail();
           const p = result.plans[0];
-          const lines = [], path = [], rawNames = [];
+          const lines = [], path = [], rawNames = [], parts = [];
           (p.segments || []).forEach((seg) => {
+            // 按段拼接接驳描述：步行 XX 米 → 乘 XX 路/地铁 X 号线（N 站）→ …
+            const walkD = seg.walking && Math.round(seg.walking.distance || 0);
+            if (walkD > 0) parts.push(`步行 ${walkD} 米`);
             if (seg.transit && seg.transit.lines && seg.transit.lines.length) {
               const raw = String(seg.transit.lines[0].name);
               rawNames.push(raw);
-              lines.push(raw.replace(/\(.*?\)/g, ''));
+              const name = raw.replace(/\(.*?\)/g, '');
+              lines.push(name);
+              const stops = seg.transit.via_num != null ? seg.transit.via_num
+                : (seg.transit.via_stops ? seg.transit.via_stops.length : null);
+              parts.push(`乘 ${name}${stops ? `（${stops} 站）` : ''}`);
             }
             const segPath = (seg.transit && seg.transit.path)
               || (seg.walking && seg.walking.path)
@@ -152,8 +159,8 @@ function amapRoute(from, to, mode, city) {
             distance: Math.round((p.distance / 1000) * 10) / 10,
             kind: transfers > 0 ? 'metro_transfer' : 'metro_direct',
             transfers, night,
-            route: lines.length
-              ? `乘坐 ${lines.join(' → ')}${transfers ? `，换乘 ${transfers} 次` : '，无需换乘'}`
+            route: parts.length
+              ? `${parts.join(' → ')}${transfers ? `，换乘 ${transfers} 次` : '，无需换乘'}`
               : `公交方案全程约 ${(p.distance / 1000).toFixed(1)} 公里`,
             path: path.length >= 2 ? path : null,
           });
@@ -238,11 +245,13 @@ async function ensureRealData() {
     return false;
   }
   state.dataError = null;
+  let fetchedAny = false; // 本次是否真的发起了新的高德查询（用于区分本地快照与实时数据）
   if (!state._companyGeo || state._companyGeo.addr !== state.company) {
     try {
       const g = await amapGeocode(state.company);
       state._companyGeo = { addr: state.company, lnglat: g };
       if (g.city) state._companyCity = g.city;
+      fetchedAny = true;
     } catch (e) {
       state.dataError = `公司地址「${state.company}」解析失败，请在第 1 步填写更精确的地址（如「上海中心大厦」）`;
       return false;
@@ -253,6 +262,7 @@ async function ensureRealData() {
   for (const l of state.listings) {
     const sig = `${l.address}|${state.company}`;
     if (l._realSig === sig) continue;
+    fetchedAny = true;
     try {
       if (!l._geo || l._geo.addr !== l.address) {
         const g = await amapGeocode(l.address);
@@ -326,6 +336,10 @@ async function ensureRealData() {
         l._futureSig = futSigOf(l);
       }
     }
+  }
+  if (fetchedAny) {
+    state.dataFetchedAt = new Date().toISOString();
+    state._freshFetch = true;
   }
   state.usingReal = true;
   return true;
@@ -401,7 +415,13 @@ function setMapLoading(on) {
 }
 function updateDataBadge() {
   const badge = document.querySelector('.demo-badge');
-  if (badge) badge.textContent = state.dataError ? '真实数据不可用' : state.usingReal ? '高德真实数据' : '真实数据加载中…';
+  if (badge) {
+    // 本地保存的路线/POI 快照不能标记为「实时数据」：未重新查询时明确显示快照时间
+    badge.textContent = state.dataError ? '真实数据不可用'
+      : state._freshFetch ? '高德真实数据'
+      : state.dataFetchedAt ? `本地快照 · 查询于 ${fmtDateTime(state.dataFetchedAt)}`
+      : '真实数据加载中…';
+  }
   const tag = document.querySelector('.map-tag');
   if (tag) tag.textContent = '真实地图 · 高德地图 JS API';
 }
@@ -461,7 +481,515 @@ const state = {
   dataError: null,             // 真实数据加载失败原因（无模拟兜底，失败必须明示）
   _companyGeo: null,           // 公司地理编码缓存 { addr, lnglat }
   _companyCity: '上海',
+  dataFetchedAt: null,         // 路线/POI 快照查询时间（ISO 字符串）
+  reportSnapshot: null,        // 最近一次选房报告快照
+  _freshFetch: false,          // 本次会话是否真正重新查询过路线/POI（区分本地快照与实时数据）
 };
+
+/* =========================================================
+ * 本地方案存储（localStorage，仅当前浏览器与设备，不上传、不同步）
+ * 清除浏览器数据、无痕模式或换设备后方案可能丢失，UI 中已明确提示。
+ * ========================================================= */
+const PROJECT_KEY = 'zhunaer.projects.v1';
+const LAST_OPEN_KEY = 'zhunaer.lastOpened.v1';
+const PRIVACY_SHOWN_KEY = 'zhunaer.privacyShown.v1';
+const PROJECT_VERSION = 1;
+const STALE_MS = 24 * 3600 * 1000; // 路线/POI 快照超过 24 小时视为过期
+
+let currentProjectId = null;
+let currentProjectTitle = '未命名选房方案';
+let projectCreatedAt = null;
+
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const deepClone = (o) => JSON.parse(JSON.stringify(o));
+
+function loadProjects() {
+  try {
+    return JSON.parse(localStorage.getItem(PROJECT_KEY)) || {};
+  } catch (e) {
+    console.warn('[住哪儿] 本地方案读取失败', e);
+    return {};
+  }
+}
+function writeProjects(projects) {
+  localStorage.setItem(PROJECT_KEY, JSON.stringify(projects));
+}
+
+/* 折线路径压缩：限制点数并转为 [lng, lat] 纯数组，控制存储体积、保证可序列化 */
+function trimPath(path) {
+  if (!path || !path.length) return null;
+  const toPair = (p) => [Math.round(p.lng * 1e6) / 1e6, Math.round(p.lat * 1e6) / 1e6];
+  if (path.length <= 200) return path.map(toPair);
+  const step = Math.ceil(path.length / 200);
+  const out = [];
+  for (let i = 0; i < path.length; i += step) out.push(toPair(path[i]));
+  out.push(toPair(path[path.length - 1]));
+  return out;
+}
+
+function serializeListing(l) {
+  const out = {
+    id: l.id, name: l.name, address: l.address, rent: l.rent, area: l.area,
+    layout: l.layout, floor: l.floor, facing: l.facing,
+    rentType: l.rentType, bath: l.bath, note: l.note,
+    lnglat: l.lnglat || null, coord: l.coord || null,
+    station: l.station || null, commute: l.commute || null, amenities: l.amenities || null,
+    _realSig: l._realSig || null, _failed: !!l._failed, _futureSig: l._futureSig || null,
+  };
+  if (l._paths) {
+    out._paths = {};
+    Object.entries(l._paths).forEach(([m, p]) => { out._paths[m] = trimPath(p); });
+  }
+  return out;
+}
+
+/* 当前界面状态 → 方案数据结构（含 PRD 要求的摘要字段 + 完整 appState 用于无损恢复） */
+function serializeProject() {
+  const now = new Date().toISOString();
+  const w = state.weights;
+  const c = state.constraints;
+  return {
+    id: currentProjectId,
+    title: currentProjectTitle,
+    createdAt: projectCreatedAt || now,
+    updatedAt: now,
+    lastOpenedAt: now,
+    version: PROJECT_VERSION,
+    workplace: {
+      address: state.company,
+      location: state._companyGeo ? { lng: state._companyGeo.lnglat.lng, lat: state._companyGeo.lnglat.lat } : undefined,
+      targetArrivalTime: state.arriveTime,
+      earliestAcceptableDeparture: c.earliestDepart.lv > 0 ? c.earliestDepart.val : '06:30',
+      workDaysPerMonth: 22,
+      preferredModes: state.prefTransport === 'mix' ? [] : [state.prefTransport],
+    },
+    constraints: {
+      monthlyBudget: state.budget,
+      maxReliableCommuteMinutes: c.maxCommute.lv > 0 ? c.maxCommute.val : SYS_MAX_CONS,
+      minArea: c.minArea.lv > 0 ? c.minArea.val : undefined,
+      mustBeWholeRental: c.wholeRent.lv === 3,
+      requiredAmenities: CONSTRAINTS.filter((x) => c[x.key].lv === 3 && !['budget', 'maxCommute', 'earliestDepart', 'minArea', 'wholeRent'].includes(x.key)).map((x) => x.key),
+    },
+    preferences: {
+      scoringMode: state.mode === 'standard' ? 'standard' : 'custom',
+      selectedPriorityCards: [...state.selectedPrefs],
+      weights: { commute: w.commute, cost: w.cost, amenities: w.life, education: w.edu, housing: w.living },
+    },
+    listings: state.listings.map(serializeListing),
+    reportSnapshot: state.reportSnapshot || undefined,
+    routeSnapshots: state.dataFetchedAt ? [{ source: 'amap-jsapi', fetchedAt: state.dataFetchedAt }] : undefined,
+    poiSnapshots: state.dataFetchedAt ? [{ source: 'amap-placesearch', fetchedAt: state.dataFetchedAt }] : undefined,
+    dataFetchedAt: state.dataFetchedAt || null,
+    appState: {
+      company: state.company, arriveTime: state.arriveTime, budget: state.budget,
+      prefTransport: state.prefTransport, nextId: state.nextId, mode: state.mode,
+      selectedPrefs: [...state.selectedPrefs],
+      customTopWeights: state.customTopWeights ? { ...state.customTopWeights } : null,
+      commuteSub: { ...state.commuteSub }, lifeSub: { ...state.lifeSub },
+      constraints: deepClone(state.constraints),
+      selectedId: state.selectedId, mapMode: state.mapMode,
+      usingReal: state.usingReal, _companyGeo: state._companyGeo, _companyCity: state._companyCity,
+    },
+  };
+}
+
+/* 方案数据 → 恢复界面状态 */
+function applyProject(p) {
+  const a = p.appState || {};
+  currentProjectId = p.id;
+  currentProjectTitle = p.title || '未命名选房方案';
+  projectCreatedAt = p.createdAt || new Date().toISOString();
+
+  state.company = a.company || (p.workplace && p.workplace.address) || '';
+  state.arriveTime = a.arriveTime || '09:00';
+  state.budget = a.budget != null ? a.budget : 8000;
+  state.prefTransport = a.prefTransport || 'mix';
+  state.listings = (p.listings || []).map((l) => ({ ...l }));
+  state.nextId = a.nextId || (state.listings.reduce((m, l) => Math.max(m, l.id), 0) + 1);
+  state.mode = a.mode || 'standard';
+  state.selectedPrefs = a.selectedPrefs || [];
+  state.customTopWeights = a.customTopWeights || null;
+  state.commuteSub = a.commuteSub || Object.fromEntries(COMMUTE_SUBS.map((s) => [s.key, s.def]));
+  state.lifeSub = a.lifeSub || Object.fromEntries(LIFE_SUBS.map((s) => [s.key, s.def]));
+  state.constraints = a.constraints || Object.fromEntries(CONSTRAINTS.map((x) => [x.key, { lv: 0, val: x.def }]));
+  state.selectedId = state.listings.some((l) => l.id === a.selectedId) ? a.selectedId : (state.listings[0] ? state.listings[0].id : null);
+  state.mapMode = a.mapMode || 'transit';
+  state.collapsed = {};
+  state.usingReal = !!a.usingReal;
+  state.dataError = null;
+  state._companyGeo = a._companyGeo || null;
+  state._companyCity = a._companyCity || '上海';
+  state.dataFetchedAt = p.dataFetchedAt || null;
+  state.reportSnapshot = p.reportSnapshot || null;
+  state._freshFetch = false; // 恢复的是本地快照，需重新查询后才能标记为实时数据
+  state.computed = [];
+}
+
+/* ---------- 保存状态指示（小型文字，不用弹窗） ---------- */
+let saveTimer = null;
+function setSaveStatus(kind) {
+  const el = $('#saveStatus');
+  if (!el) return;
+  if (kind === 'saving') { el.className = 'save-status saving'; el.textContent = '正在保存…'; el.title = ''; }
+  else if (kind === 'saved') { el.className = 'save-status saved'; el.textContent = '✓ 已保存到本设备'; el.title = '仅保存在当前浏览器，不会上传'; }
+  else if (kind === 'error') { el.className = 'save-status error'; el.textContent = '保存失败，请重试'; el.title = '点击重试'; }
+}
+
+function saveNow() {
+  if (!currentProjectId) return;
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  setSaveStatus('saving');
+  try {
+    const projects = loadProjects();
+    projects[currentProjectId] = serializeProject();
+    writeProjects(projects);
+    localStorage.setItem(LAST_OPEN_KEY, currentProjectId);
+    setSaveStatus('saved');
+    // 首次保存时提示隐私与限制（仅一次，不反复打扰）
+    if (!localStorage.getItem(PRIVACY_SHOWN_KEY)) {
+      localStorage.setItem(PRIVACY_SHOWN_KEY, '1');
+      showNotice('已保存到本设备。你的方案仅保存在当前浏览器，不会上传；清除浏览器数据或更换设备后可能丢失，建议定期导出备份。');
+    }
+  } catch (e) {
+    console.warn('[住哪儿] 保存失败', e);
+    setSaveStatus('error');
+  }
+}
+/* 停止输入 650ms 后保存；连续修改合并为一次写入 */
+function scheduleSave() {
+  if (!currentProjectId) return;
+  setSaveStatus('saving');
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveNow, 650);
+}
+
+/* ---------- 一次性通知条（恢复提示 / 过期数据提醒，非频繁 Toast） ---------- */
+function showNotice(html, action) {
+  document.querySelectorAll('.app-notice').forEach((n) => n.remove());
+  const bar = document.createElement('div');
+  bar.className = 'app-notice';
+  bar.innerHTML = `<span class="an-text">${html}</span>
+    ${action ? `<button class="an-action">${action.label}</button>` : ''}
+    <button class="an-close">×</button>`;
+  document.body.appendChild(bar);
+  if (action) bar.querySelector('.an-action').addEventListener('click', () => { action.fn(); bar.remove(); });
+  bar.querySelector('.an-close').addEventListener('click', () => bar.remove());
+  if (!action) setTimeout(() => bar.remove(), 6000);
+}
+
+/* 路线/POI 快照过期提醒（> 24 小时） */
+function checkStaleSnapshot() {
+  if (!state.dataFetchedAt) return;
+  const ageMs = Date.now() - new Date(state.dataFetchedAt).getTime();
+  if (ageMs <= STALE_MS) return;
+  const days = Math.max(1, Math.round(ageMs / STALE_MS));
+  showNotice(
+    `你正在查看保存于 ${days} 天前的方案。路线与周边数据可能已变化，建议重新查询。`,
+    { label: '重新查询路线与周边数据', fn: refetchRealData }
+  );
+}
+function refetchRealData() {
+  // 使本地快照缓存失效，重新走高德实时查询
+  state._companyGeo = null;
+  state.listings.forEach((l) => { l._realSig = null; l._futureSig = null; l._failed = false; });
+  if (state.view !== 'step2') { showView('step2'); return; }
+  setMapLoading(true);
+  ensureRealData().then(() => {
+    setMapLoading(false);
+    computeAll(); renderListingCards(); mapFitAll(); renderMap(); renderDataState();
+    scheduleSave();
+  });
+}
+
+/* ---------- 表单与状态同步（切换/恢复方案后调用） ---------- */
+function syncInputsFromState() {
+  $('#companyInput').value = state.company;
+  $('#arriveTime').value = state.arriveTime;
+  document.querySelectorAll('#prefTransportCaps .capsule').forEach((b) => {
+    b.classList.toggle('active', b.dataset.pt === state.prefTransport);
+  });
+  renderConstraints();
+  updateDataBadge();
+}
+
+function openProject(id) {
+  const projects = loadProjects();
+  const p = projects[id];
+  if (!p) return;
+  if (id !== currentProjectId) saveNow(); // 先保存当前方案
+  applyProject(p);
+  p.lastOpenedAt = new Date().toISOString();
+  projects[id] = p;
+  writeProjects(projects);
+  localStorage.setItem(LAST_OPEN_KEY, id);
+  syncInputsFromState();
+  closeDrawer();
+  showView(state.view === 'welcome' ? 'welcome' : state.view);
+  setSaveStatus('saved');
+  checkStaleSnapshot();
+}
+
+/* ---------- 新建 / 复制 / 重命名 / 删除 ---------- */
+function resetToBlankProject(title) {
+  currentProjectId = uid();
+  currentProjectTitle = title || '未命名选房方案';
+  projectCreatedAt = new Date().toISOString();
+  state.company = '';
+  state.arriveTime = '09:00';
+  state.budget = 8000;
+  state.prefTransport = 'mix';
+  state.listings = [];
+  state.nextId = 1;
+  state.mode = 'standard';
+  state.selectedPrefs = [];
+  state.customTopWeights = null;
+  state.commuteSub = Object.fromEntries(COMMUTE_SUBS.map((s) => [s.key, s.def]));
+  state.lifeSub = Object.fromEntries(LIFE_SUBS.map((s) => [s.key, s.def]));
+  state.constraints = Object.fromEntries(CONSTRAINTS.map((c) => [c.key, { lv: 0, val: c.def }]));
+  state.computed = [];
+  state.selectedId = null;
+  state.collapsed = {};
+  state.usingReal = false;
+  state.dataError = null;
+  state._companyGeo = null;
+  state.dataFetchedAt = null;
+  state.reportSnapshot = null;
+  state._freshFetch = false;
+}
+
+function createProject() {
+  saveNow();
+  resetToBlankProject();
+  saveNow();
+  syncInputsFromState();
+  closeDrawer();
+  showView('step1'); // 引导进入第 1 步
+}
+
+function duplicateProject(id) {
+  const projects = loadProjects();
+  const src = projects[id];
+  if (!src) return;
+  const copy = deepClone(src);
+  copy.id = uid();
+  copy.title = `${src.title}（副本）`;
+  copy.createdAt = copy.updatedAt = copy.lastOpenedAt = new Date().toISOString();
+  projects[copy.id] = copy;
+  writeProjects(projects);
+  renderProjectList();
+}
+
+function renameProject(id) {
+  const projects = loadProjects();
+  const p = projects[id];
+  if (!p) return;
+  openModal(`
+    <h4>重命名方案</h4>
+    <input type="text" id="renameInput" maxlength="50" value="${p.title.replace(/"/g, '&quot;')}" placeholder="1–50 个字符">
+    <div class="modal-err hidden" id="renameErr">名称不能为空</div>
+    <div class="modal-btns">
+      <button class="btn-back" id="modalCancel">取消</button>
+      <button class="btn-next" id="modalOk">保存</button>
+    </div>`);
+  $('#modalCancel').addEventListener('click', closeModal);
+  $('#modalOk').addEventListener('click', () => {
+    const v = $('#renameInput').value.trim();
+    if (!v) { $('#renameErr').classList.remove('hidden'); return; }
+    p.title = v.slice(0, 50);
+    p.updatedAt = new Date().toISOString();
+    projects[id] = p;
+    writeProjects(projects);
+    if (id === currentProjectId) currentProjectTitle = p.title;
+    closeModal();
+    renderProjectList();
+  });
+}
+
+function deleteProject(id) {
+  const projects = loadProjects();
+  const p = projects[id];
+  if (!p) return;
+  openModal(`
+    <h4>确定删除「${p.title}」吗？</h4>
+    <p class="modal-sub">删除后无法恢复，除非你此前已导出备份文件。</p>
+    <div class="modal-btns">
+      <button class="btn-back" id="modalCancel">取消</button>
+      <button class="btn-danger" id="modalOk">确认删除</button>
+    </div>`);
+  $('#modalCancel').addEventListener('click', closeModal);
+  $('#modalOk').addEventListener('click', () => {
+    delete projects[id];
+    writeProjects(projects);
+    closeModal();
+    if (id === currentProjectId) {
+      localStorage.removeItem(LAST_OPEN_KEY);
+      const rest = Object.values(projects).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      if (rest.length) {
+        openProject(rest[0].id);
+        return;
+      }
+      // 删除的是最后一个方案：回到欢迎页并创建新的默认空白方案
+      resetToBlankProject();
+      saveNow();
+      syncInputsFromState();
+      showView('welcome');
+    }
+    renderProjectList();
+  });
+}
+
+/* ---------- 导出 / 导入备份 ---------- */
+function exportProject(id) {
+  if (id === currentProjectId) saveNow(); // 先落盘最新内容
+  const p = loadProjects()[id];
+  if (!p) return;
+  const blob = new Blob([JSON.stringify(p, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `住哪儿-${p.title}-${p.updatedAt.slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function validateImport(p) {
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return '文件格式不正确：不是有效的方案文件';
+  if (p.version == null) return '文件格式不正确：缺少数据版本号';
+  if (p.version > PROJECT_VERSION) return `版本暂不支持：文件版本为 v${p.version}，当前支持 v${PROJECT_VERSION}`;
+  if (!p.workplace || typeof p.workplace.address !== 'string') return '文件格式不正确：缺少公司地址信息';
+  if (!Array.isArray(p.listings)) return '文件格式不正确：缺少房源列表';
+  if (!p.appState || typeof p.appState !== 'object') return '文件格式不正确：缺少界面状态数据';
+  return null;
+}
+
+function importProjectFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    let p;
+    try {
+      p = JSON.parse(reader.result);
+    } catch (e) {
+      showNotice('导入失败：文件格式不正确，请选择「住哪儿」导出的 JSON 备份文件。');
+      return;
+    }
+    const err = validateImport(p);
+    if (err) { showNotice(`导入失败：${err}。`); return; }
+    // 导入为一个独立的新方案，不覆盖已有方案
+    p.id = uid();
+    if (!p.title) p.title = '未命名选房方案';
+    p.updatedAt = new Date().toISOString();
+    const projects = loadProjects();
+    projects[p.id] = p;
+    writeProjects(projects);
+    renderProjectList();
+    showNotice(`已导入为新方案「${p.title}」，不会影响已有方案。`);
+  };
+  reader.readAsText(file);
+}
+
+/* ---------- 我的方案抽屉 ---------- */
+function fmtRelativeTime(iso) {
+  const d = new Date(iso);
+  const now = new Date();
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const dayStart = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diffDays = Math.round((dayStart(now) - dayStart(d)) / 86400000);
+  if (diffDays <= 0) return `今天 ${hm}`;
+  if (diffDays === 1) return `昨天 ${hm}`;
+  if (diffDays < 30) return `${diffDays} 天前`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function fmtDateTime(iso) {
+  const d = new Date(iso);
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function renderProjectList() {
+  const wrap = $('#pdList');
+  const projects = Object.values(loadProjects()).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  if (!projects.length) {
+    wrap.innerHTML = `
+      <div class="pd-empty">
+        <svg viewBox="0 0 64 64" width="56" height="56" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M54 50a4 4 0 0 1-4 4H14a4 4 0 0 1-4-4V18a4 4 0 0 1 4-4h14l6 8h16a4 4 0 0 1 4 4z"/>
+          <path d="M24 34h16M24 42h10" opacity=".5"/>
+        </svg>
+        <p>你还没有保存任何选房方案。<br>从第一套候选房源开始吧。</p>
+        <button class="btn-next" id="pdEmptyNew">＋ 新建选房方案</button>
+      </div>`;
+    $('#pdEmptyNew').addEventListener('click', createProject);
+    return;
+  }
+  wrap.innerHTML = projects.map((p) => {
+    const isCurrent = p.id === currentProjectId;
+    const modeLabel = p.preferences && p.preferences.scoringMode === 'custom' ? '按我的偏好' : '标准推荐';
+    const rec = p.reportSnapshot && p.reportSnapshot.recommendedListingName
+      ? `<div class="pc-rec">推荐：${p.reportSnapshot.recommendedListingName}</div>` : '';
+    return `
+      <div class="proj-card ${isCurrent ? 'current' : ''}" data-pid="${p.id}">
+        <div class="pc-head">
+          <span class="pc-title">${p.title}</span>
+          ${isCurrent ? '<span class="pc-current-tag">当前打开</span>' : ''}
+        </div>
+        <div class="pc-meta">公司：${(p.workplace && p.workplace.address) || '未填写'}</div>
+        <div class="pc-meta">${(p.listings || []).length} 套房源 · ${modeLabel} · 最后修改：${fmtRelativeTime(p.updatedAt)}</div>
+        ${rec}
+        <div class="pc-foot">
+          <span class="pc-local">本地保存</span>
+          <span class="pc-ops">
+            <button data-op="open">继续编辑</button>
+            <button data-op="rename">重命名</button>
+            <button data-op="dup">复制</button>
+            <button data-op="export">导出备份</button>
+            <button data-op="del" class="op-del">删除</button>
+          </span>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function openDrawer() {
+  saveNow(); // 打开列表前确保当前方案已落盘，卡片信息为最新
+  renderProjectList();
+  $('#drawerMask').classList.remove('hidden');
+  $('#projDrawer').classList.add('open');
+}
+function closeDrawer() {
+  $('#drawerMask').classList.add('hidden');
+  $('#projDrawer').classList.remove('open');
+}
+
+/* ---------- 通用弹窗 ---------- */
+function openModal(html) {
+  $('#modalBox').innerHTML = html;
+  $('#modalMask').classList.remove('hidden');
+}
+function closeModal() {
+  $('#modalMask').classList.add('hidden');
+  $('#modalBox').innerHTML = '';
+}
+
+/* ---------- 初始化：恢复最近方案或创建默认方案 ---------- */
+function initProjects() {
+  const projects = loadProjects();
+  const lastId = localStorage.getItem(LAST_OPEN_KEY);
+  const recent = Object.values(projects).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const p = (lastId && projects[lastId]) || recent[0];
+  if (p) {
+    applyProject(p);
+    localStorage.setItem(LAST_OPEN_KEY, p.id);
+    syncInputsFromState();
+    setSaveStatus('saved');
+    showNotice('已恢复上次编辑内容。');
+    setTimeout(checkStaleSnapshot, 400);
+  } else {
+    // 首次打开：创建默认「未命名选房方案」（含预置示例房源）
+    currentProjectId = uid();
+    currentProjectTitle = '未命名选房方案';
+    projectCreatedAt = new Date().toISOString();
+    saveNow();
+  }
+}
 
 /* ---------- 工具函数 ---------- */
 const $ = (sel) => document.querySelector(sel);
@@ -864,6 +1392,7 @@ function showView(name) {
       if (ok) initAmapMap();
       computeAll(); renderListingCards();
       mapFitAll(); renderMap(); renderDataState();
+      if (ok) scheduleSave(); // 路线/POI 数据更新后自动保存
     });
   }
   if (name === 'step3') { renderPrefWall(); renderPrefProfile(); renderModeCards(); renderSliders(); }
@@ -1454,6 +1983,19 @@ function renderResult() {
   renderTable();
   renderDiff();
   renderDetails();
+  // 生成选房报告 → 保存报告快照并自动保存方案
+  const ranks = currentRanks();
+  const top = currentOrder().find((c) => c.status !== 'ineligible');
+  state.reportSnapshot = {
+    generatedAt: new Date().toISOString(),
+    recommendedListingId: top ? top.id : undefined,
+    recommendedListingName: top ? top.name : undefined,
+    results: state.computed.map((c) => ({
+      id: c.id, name: c.name, status: c.status,
+      rank: ranks[c.id], score: scoreOf(c, state.weights),
+    })),
+  };
+  scheduleSave();
 }
 
 /* =========================================================
@@ -1553,17 +2095,20 @@ function bindEvents() {
   $('#companyInput').addEventListener('input', (e) => {
     state.company = e.target.value || '公司';
     state._companyGeo = null; // 公司变更后，进入第 2 步会重新地理编码并刷新通勤数据
+    scheduleSave();
   });
   $('#arriveTime').addEventListener('input', (e) => {
     state.arriveTime = e.target.value || '09:00';
     // 到达时间变化 → 未来路线规划缓存失效，下次进入第 2 步时按新时刻重查
     state.listings.forEach((l) => { l._futureSig = null; });
+    scheduleSave();
   });
   $('#prefTransportCaps').addEventListener('click', (e) => {
     const btn = e.target.closest('.capsule');
     if (!btn) return;
     state.prefTransport = btn.dataset.pt;
     document.querySelectorAll('#prefTransportCaps .capsule').forEach((b) => b.classList.toggle('active', b === btn));
+    scheduleSave();
   });
 
   // 第 1 步：底线条件
@@ -1573,6 +2118,7 @@ function bindEvents() {
       const key = segBtn.parentElement.dataset.ckey;
       state.constraints[key].lv = Number(segBtn.dataset.lv);
       renderConstraints();
+      scheduleSave();
       return;
     }
     const capBtn = e.target.closest('[data-ccaps] button');
@@ -1582,6 +2128,7 @@ function bindEvents() {
       if (key === 'budget') state.budget = v;
       else state.constraints[key].val = v;
       renderConstraints();
+      scheduleSave();
     }
   });
   $('#constraintGrid').addEventListener('input', (e) => {
@@ -1593,6 +2140,7 @@ function bindEvents() {
       state.constraints[key].val = c.type === 'number' ? Number(e.target.value) : e.target.value;
     }
     renderBottomline();
+    scheduleSave();
   });
 
   // 第 2 步：房源卡片
@@ -1601,6 +2149,7 @@ function bindEvents() {
     if (!id || !f) return;
     const l = state.listings.find((x) => x.id === id);
     l[f] = (f === 'rent' || f === 'area') ? Number(e.target.value) : e.target.value;
+    scheduleSave();
   });
   $('#listingList').addEventListener('change', (e) => {
     // 地址变化 → 重新走高德地理编码并刷新通勤/配套（无模拟数据，地址为空则等待填写）
@@ -1615,12 +2164,14 @@ function bindEvents() {
           ensureRealData().then(() => {
             setMapLoading(false);
             computeAll(); renderListingCards(); mapFocusSelected(); renderMap(); renderDataState();
+            scheduleSave(); // 路线/POI 数据更新后自动保存
           });
           return;
         }
       }
     }
     computeAll(); renderListingCards(); renderMap();
+    scheduleSave();
   });
   $('#listingList').addEventListener('click', (e) => {
     const del = e.target.closest('[data-del]');
@@ -1630,6 +2181,7 @@ function bindEvents() {
       state.listings = state.listings.filter((l) => l.id !== id);
       if (state.selectedId === id) state.selectedId = state.listings[0].id;
       computeAll(); renderListingCards(); mapFitAll(); renderMap();
+      scheduleSave();
       return;
     }
     const sel = e.target.closest('[data-select]');
@@ -1650,6 +2202,7 @@ function bindEvents() {
     });
     state.selectedId = id;
     computeAll(); renderListingCards(); // 填写地址后由 change 事件触发真实数据拉取
+    scheduleSave();
   });
 
   // 第 2 步：地图控件
@@ -1673,6 +2226,7 @@ function bindEvents() {
       : [...state.selectedPrefs, key];
     state.customTopWeights = null;
     renderPrefWall(); renderPrefProfile(); renderSliders();
+    scheduleSave();
   });
 
   // 第 3 步：模式卡片
@@ -1681,6 +2235,7 @@ function bindEvents() {
     if (!card) return;
     state.mode = card.dataset.mode;
     renderModeCards();
+    scheduleSave();
   });
 
   // 高级设置
@@ -1711,6 +2266,7 @@ function bindEvents() {
         if (el) el.textContent = `${norm[s.key]}%`;
       });
     }
+    scheduleSave();
   });
 
   // 结果页：模式切换
@@ -1774,8 +2330,40 @@ function bindEvents() {
     b.addEventListener('click', () => aiAsk(q));
     quick.appendChild(b);
   });
+
+  // 我的方案抽屉
+  $('#projBtn').addEventListener('click', openDrawer);
+  $('#pdClose').addEventListener('click', closeDrawer);
+  $('#drawerMask').addEventListener('click', closeDrawer);
+  $('#pdNew').addEventListener('click', createProject);
+  $('#pdImport').addEventListener('click', () => $('#pdImportFile').click());
+  $('#pdImportFile').addEventListener('change', (e) => {
+    if (e.target.files && e.target.files[0]) importProjectFile(e.target.files[0]);
+    e.target.value = '';
+  });
+  $('#pdList').addEventListener('click', (e) => {
+    const opBtn = e.target.closest('[data-op]');
+    if (!opBtn) return;
+    const card = opBtn.closest('[data-pid]');
+    const id = card.dataset.pid;
+    const op = opBtn.dataset.op;
+    if (op === 'open') openProject(id);
+    else if (op === 'rename') renameProject(id);
+    else if (op === 'dup') duplicateProject(id);
+    else if (op === 'export') exportProject(id);
+    else if (op === 'del') deleteProject(id);
+  });
+
+  // 保存失败时点击状态文字重试
+  $('#saveStatus').addEventListener('click', () => {
+    if ($('#saveStatus').classList.contains('error')) saveNow();
+  });
+
+  // 关闭/刷新页面前，把待保存的修改立即落盘
+  window.addEventListener('beforeunload', () => { if (saveTimer) saveNow(); });
 }
 
 /* ---------- 初始化 ---------- */
+initProjects(); // 恢复最近编辑的方案，或创建默认「未命名选房方案」
 renderConstraints();
 bindEvents();
