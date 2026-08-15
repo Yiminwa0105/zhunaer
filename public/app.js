@@ -234,7 +234,8 @@ function amapRoute(from, to, mode, city) {
           if (status !== 'complete' || !result.routes || !result.routes.length) return fail();
           const r = result.routes[0];
           const path = [];
-          const steps = r.steps || (r.rides && r.rides[0] && r.rides[0].steps) || [];
+          // Driving/Walking: r.steps[].path；Riding: r.rides[] 本身即步骤数组（每步含 path）
+          const steps = r.steps || r.rides || [];
           steps.forEach((s) => (s.path || []).forEach((pt) => path.push(pt)));
           resolve({
             duration: Math.round(r.time / 60),
@@ -429,20 +430,24 @@ function renderRealMap() {
     if (!l.lnglat) return;
     const color = LISTING_COLORS[i % LISTING_COLORS.length];
     const sel = l.id === state.selectedId;
-    // 路线：只画选中房源的路线（点击图钉切换）；无效路线（夜班/异常）不画轨迹
+    // 路线：只画选中房源的路线（点击图钉切换）。无效路线（夜班/异常）也画轨迹，
+    // 但信息卡会说明不推荐原因；路线数据缺失或含坏点（历史快照可能存过 [null,null]）时
+    // 过滤坏点后退化为房源—公司直线，保证始终有线且不中断其余标记渲染
     if (sel) {
-      const opt = l.commute && l.commute[state.mapMode];
-      const path = (!opt || opt.invalid) ? null : (l._paths && l._paths[state.mapMode])
-        || [[l.lnglat.lng, l.lnglat.lat], [company.lng, company.lat]];
-      if (path) {
-        const line = new AMap.Polyline({
-          path, strokeColor: color, strokeWeight: 6, strokeOpacity: 0.95,
-          strokeStyle: (state.mapMode === 'bike' || state.mapMode === 'walk') ? 'dashed' : 'solid',
-          lineJoin: 'round', lineCap: 'round', zIndex: 60,
-        });
-        amapMap.add(line);
-        amapOverlays.routes.push(line);
-      }
+      const raw = (l._paths && l._paths[state.mapMode]) || [];
+      const cleanPath = raw
+        .map((p) => (Array.isArray(p) ? p : [p.lng, p.lat]))
+        .filter((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]));
+      const path = cleanPath.length >= 2
+        ? cleanPath
+        : [[l.lnglat.lng, l.lnglat.lat], [company.lng, company.lat]];
+      const line = new AMap.Polyline({
+        path, strokeColor: color, strokeWeight: 6, strokeOpacity: 0.95,
+        strokeStyle: (state.mapMode === 'bike' || state.mapMode === 'walk') ? 'dashed' : 'solid',
+        lineJoin: 'round', lineCap: 'round', zIndex: 60,
+      });
+      amapMap.add(line);
+      amapOverlays.routes.push(line);
     }
 
     const pin = new AMap.Marker({
@@ -453,7 +458,7 @@ function renderRealMap() {
     });
     pin.on('click', () => {
       state.selectedId = l.id;
-      renderListingCards(); mapFocusSelected(); renderMap();
+      renderListingCards(); renderMap(); mapFocusSelected();
     });
     amapMap.add(pin);
     amapOverlays.pins.push({ id: l.id, pin });
@@ -578,10 +583,16 @@ function writeProjects(projects) {
   localStorage.setItem(PROJECT_KEY, JSON.stringify(projects));
 }
 
-/* 折线路径压缩：限制点数并转为 [lng, lat] 纯数组，控制存储体积、保证可序列化 */
+/* 折线路径压缩：限制点数并转为 [lng, lat] 纯数组，控制存储体积、保证可序列化。
+ * 兼容两种点格式：JS API 的 LngLat 对象（p.lng/p.lat）与 Web 服务代理的数组（p[0]/p[1]），
+ * 否则数组点会被算成 NaN，经 JSON 存成 null，恢复后导致地图渲染崩溃 */
 function trimPath(path) {
   if (!path || !path.length) return null;
-  const toPair = (p) => [Math.round(p.lng * 1e6) / 1e6, Math.round(p.lat * 1e6) / 1e6];
+  const toPair = (p) => {
+    const x = Array.isArray(p) ? p[0] : p.lng;
+    const y = Array.isArray(p) ? p[1] : p.lat;
+    return [Math.round(x * 1e6) / 1e6, Math.round(y * 1e6) / 1e6];
+  };
   if (path.length <= 200) return path.map(toPair);
   const step = Math.ceil(path.length / 200);
   const out = [];
@@ -760,7 +771,7 @@ function refetchRealData() {
   setMapLoading(true);
   ensureRealData().then(() => {
     setMapLoading(false);
-    computeAll(); renderListingCards(); mapFitAll(); renderMap(); renderDataState();
+    computeAll(); renderListingCards(); renderMap(); mapFitAll(); renderDataState();
     scheduleSave();
   });
 }
@@ -1455,7 +1466,7 @@ function showView(name) {
       setMapLoading(false);
       if (ok) initAmapMap();
       computeAll(); renderListingCards();
-      mapFitAll(); renderMap(); renderDataState();
+      renderMap(); mapFitAll(); renderDataState();
       if (ok) scheduleSave(); // 路线/POI 数据更新后自动保存
     });
   }
@@ -1565,8 +1576,8 @@ const listingSpy = new IntersectionObserver((entries) => {
     if (id && id !== state.selectedId) {
       state.selectedId = id;
       renderListingCards();
-      mapFocusSelected();
       renderMap();
+      mapFocusSelected();
     }
   });
 }, { rootMargin: '-42% 0px -42% 0px' });
@@ -1593,6 +1604,13 @@ function renderMapInfo() {
   if (!l || !l.commute) { $('#mapInfo').innerHTML = ''; return; }
   const i = state.listings.indexOf(l);
   const opt = l.commute[state.mapMode];
+  // 该方式路线查询失败（接口异常）：明确提示，不崩溃
+  if (!opt) {
+    $('#mapInfo').innerHTML = `
+      <div class="mi-mode">房源 ${String.fromCharCode(65 + i)} · ${TRANSPORT_LABEL[state.mapMode]}</div>
+      <div class="mi-sub">该方式路线查询失败，请点「全部」或重新进入本页重试。</div>`;
+    return;
+  }
   // 无效路线（夜班/异常/待核验）：不展示时长，只显示原因
   if (opt.invalid) {
     $('#mapInfo').innerHTML = `
@@ -2258,7 +2276,7 @@ function bindEvents() {
       const id = Number(del.dataset.del);
       state.listings = state.listings.filter((l) => l.id !== id);
       if (state.selectedId === id) state.selectedId = state.listings[0].id;
-      computeAll(); renderListingCards(); mapFitAll(); renderMap();
+      computeAll(); renderListingCards(); renderMap(); mapFitAll();
       scheduleSave();
       return;
     }
@@ -2266,8 +2284,8 @@ function bindEvents() {
     if (sel && !e.target.closest('input, select, textarea')) {
       state.selectedId = Number(sel.dataset.select);
       renderListingCards();
-      mapFocusSelected();
       renderMap();
+      mapFocusSelected();
     }
   });
   $('#addListingBtn').addEventListener('click', () => {
@@ -2289,10 +2307,11 @@ function bindEvents() {
     if (!btn) return;
     state.mapMode = btn.dataset.mm;
     renderMap();
+    mapFitAll(); // 切换方式后保持 A/B/C 与公司全部可见，同时画出选中房源的路线
   });
   $('#mapZoomIn').addEventListener('click', () => { if (amapMap) amapMap.zoomIn(); });
   $('#mapZoomOut').addEventListener('click', () => { if (amapMap) amapMap.zoomOut(); });
-  $('#mapFit').addEventListener('click', () => { mapFitAll(); renderMap(); });
+  $('#mapFit').addEventListener('click', () => { renderMap(); mapFitAll(); });
 
   // 第 3 步：偏好卡片墙
   $('#prefWall').addEventListener('click', (e) => {

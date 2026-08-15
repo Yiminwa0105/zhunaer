@@ -225,6 +225,77 @@ body {
   transition: box-shadow .3s var(--ease-out);
 }
 
+/* ---------- AI 面板美化（历史记录 / 头像 / 时间 / 空状态 / 移动端） ---------- */
+.ai-head { align-items: center; }
+.ai-head-title { display: flex; align-items: center; gap: 10px; }
+.ai-head-icon { font-size: 18px; line-height: 1; }
+.ai-head-actions { display: flex; align-items: center; gap: 10px; }
+.ai-clear {
+  background: rgba(255, 255, 255, .12); border: none; color: rgba(255, 255, 255, .85);
+  border-radius: 999px; padding: 4px 10px; font-size: 11px; cursor: pointer;
+  transition: background-color .16s var(--ease-out);
+}
+.ai-clear:hover { background: rgba(255, 255, 255, .24); }
+
+/* 消息行：助手带头像，用户靠右 */
+.msg-row { display: flex; align-items: flex-end; gap: 8px; }
+.msg-row.user { justify-content: flex-end; }
+.ai-avatar {
+  flex: none; width: 26px; height: 26px; border-radius: 50%;
+  background: var(--emerald-bg); display: flex; align-items: center; justify-content: center;
+  font-size: 13px; border: 1px solid var(--line);
+}
+.msg { overflow-wrap: anywhere; } /* 超长文本不撑破面板 */
+.msg-time { display: block; margin-top: 5px; font-size: 10px; opacity: .55; text-align: right; }
+.msg.bot .msg-time { text-align: left; }
+
+/* 数据变化提示（非消息型） */
+.ai-stale-banner {
+  background: var(--gold-bg); color: var(--gold); border: 1px solid rgba(168, 124, 42, .25);
+  border-radius: 10px; padding: 8px 12px; font-size: 12px; line-height: 1.6;
+}
+
+/* 空状态欢迎卡 */
+.ai-empty {
+  margin: auto; text-align: center; padding: 18px 14px;
+  background: #fff; border: 1px solid var(--line); border-radius: 14px;
+}
+.ai-empty-icon { font-size: 26px; display: block; margin-bottom: 8px; }
+.ai-empty p { font-size: 13px; color: var(--text-2); line-height: 1.8; white-space: pre-wrap; margin: 0 0 12px; }
+.ai-quick.in-empty { border: none; padding: 0; justify-content: center; }
+
+/* 快捷问题 Chip：移动端易点击（最小高度约 36px） */
+.ai-quick .chip {
+  min-height: 36px; display: inline-flex; align-items: center;
+  transition: border-color .16s var(--ease-out), color .16s var(--ease-out),
+    background-color .16s var(--ease-out), transform .16s var(--ease-out);
+}
+.ai-quick .chip:hover:not(:disabled) { background: var(--emerald-bg); }
+.ai-quick .chip:active:not(:disabled) { transform: scale(.97); }
+.ai-quick .chip:disabled { opacity: .5; cursor: default; }
+
+/* 输入区：textarea 支持 Shift+Enter 换行 */
+.ai-input-row { align-items: flex-end; }
+.ai-input-row textarea {
+  flex: 1; resize: none; max-height: 96px; font: inherit; font-size: 13px;
+  border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px;
+  background: #fff; color: var(--text); outline: none;
+  transition: border-color .16s var(--ease-out), box-shadow .16s var(--ease-out);
+}
+.ai-input-row textarea:focus { border-color: var(--emerald); box-shadow: 0 0 0 3px var(--emerald-bg); }
+.btn-send { min-height: 38px; transition: background-color .16s var(--ease-out), opacity .16s var(--ease-out), transform .16s var(--ease-out); }
+.btn-send:hover:not(:disabled) { background: var(--emerald-dark); }
+.btn-send:disabled { opacity: .45; cursor: default; }
+
+/* 移动端：面板接近全宽、不超出视口、输入区始终可见 */
+@media (max-width: 640px) {
+  .ai-panel {
+    right: 8px; left: 8px; bottom: 8px; width: auto;
+    height: min(560px, calc(100dvh - 16px)); max-height: calc(100dvh - 16px);
+  }
+  .ai-fab { right: 16px; bottom: 16px; }
+}
+
 /* ---------- 可访问性（skills §14） ---------- */
 @media (prefers-reduced-transparency: reduce) {
   .topbar, .map-modes, .map-info, .float-chip {
