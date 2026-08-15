@@ -134,8 +134,12 @@ function amapRoute(from, to, mode, city) {
           const p = result.plans[0];
           const lines = [], path = [], rawNames = [], parts = [];
           (p.segments || []).forEach((seg) => {
-            // 按段拼接接驳描述：步行 XX 米 → 乘 XX 路/地铁 X 号线（N 站）→ …
-            const walkD = seg.walking && Math.round(seg.walking.distance || 0);
+            // 按段拼接接驳描述：步行 XX 米 → 地铁X号线（N 站）→ …
+            // 步行距离多层兜底：segment.distance → steps 逐段求和（部分方案 distance 字段为空）
+            const walkD = seg.walking
+              ? Math.round(Number(seg.walking.distance)
+                || ((seg.walking.steps || []).reduce((s, st) => s + Number(st.distance || 0), 0)))
+              : 0;
             if (walkD > 0) parts.push(`步行 ${walkD} 米`);
             if (seg.transit && seg.transit.lines && seg.transit.lines.length) {
               const raw = String(seg.transit.lines[0].name);
@@ -144,13 +148,18 @@ function amapRoute(from, to, mode, city) {
               lines.push(name);
               const stops = seg.transit.via_num != null ? seg.transit.via_num
                 : (seg.transit.via_stops ? seg.transit.via_stops.length : null);
-              parts.push(`乘 ${name}${stops ? `（${stops} 站）` : ''}`);
+              parts.push(`${name}${stops ? `（${stops} 站）` : ''}`);
             }
             const segPath = (seg.transit && seg.transit.path)
               || (seg.walking && seg.walking.path)
               || ((seg.walking && seg.walking.steps) || []).flatMap((s) => s.path || []);
             (segPath || []).forEach((pt) => path.push(pt));
           });
+          // 分段均无步行明细但方案级有总步行距离时，补充说明
+          if (lines.length && !parts.some((x) => x.indexOf('步行') === 0)) {
+            const totalWalk = Math.round(Number(p.walking_distance || 0));
+            if (totalWalk > 0) parts.push(`全程步行接驳约 ${totalWalk} 米`);
+          }
           const transfers = Math.max(0, lines.length - 1);
           // 夜班线路检测：线路名含「夜」（夜宵线/夜班线）则不属于工作日早高峰通勤
           const night = rawNames.some((n) => /夜/.test(n));
