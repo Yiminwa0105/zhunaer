@@ -181,6 +181,7 @@ function amapRoute(from, to, mode, city) {
         // 优先 Web服务详细分段；不可用（本地 wrangler 未启动/线上代理不通）回退 JS API
         amapTransitDetailed(from, to, city).then((det) => {
           if (det) return resolve(det);
+          if (TRANSIT_API) console.warn('[住哪儿] 公交详细分段代理不可用，已回退 JS API（无分段步行明细）。本地请先运行 npm run dev；线上需网络可达 workers.dev');
         new AMap.Transfer({ city }).search(origin, dest, (status, result) => {
           if (status !== 'complete' || !result.plans || !result.plans.length) return fail();
           const p = result.plans[0];
