@@ -325,7 +325,12 @@ async function ensureRealData() {
   let failed = 0;
   for (const l of state.listings) {
     const sig = `${l.address}|${state.company}`;
-    if (l._realSig === sig) continue;
+    // 坏路径自动修复：旧版本保存的快照可能把路径点存成 [null,null] 或 [0,0]（渲染只能
+    // 退化为直线）。检测到这种损坏时即使签名匹配也强制重查，恢复真实轨迹后重新保存快照
+    const pathCorrupt = (p) => Array.isArray(p) && p.length >= 2 && !p.some(validRoutePoint);
+    const hasBadPaths = l._paths && Object.values(l._paths).some(pathCorrupt);
+    if (l._realSig === sig && !hasBadPaths) continue;
+    if (hasBadPaths) l._realSig = null;
     fetchedAny = true;
     try {
       if (!l._geo || l._geo.addr !== l.address) {
@@ -437,7 +442,7 @@ function renderRealMap() {
       const raw = (l._paths && l._paths[state.mapMode]) || [];
       const cleanPath = raw
         .map((p) => (Array.isArray(p) ? p : [p.lng, p.lat]))
-        .filter((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]));
+        .filter(validRoutePoint);
       const path = cleanPath.length >= 2
         ? cleanPath
         : [[l.lnglat.lng, l.lnglat.lat], [company.lng, company.lat]];
@@ -583,21 +588,26 @@ function writeProjects(projects) {
   localStorage.setItem(PROJECT_KEY, JSON.stringify(projects));
 }
 
+/* 合理轨迹点：数值有限且不落在 (0,0) 附近（坏点经 NaN→null→0 链路会变成 [0,0]） */
+const validRoutePoint = (q) => !!q && Number.isFinite(q[0]) && Number.isFinite(q[1])
+  && (Math.abs(q[0]) > 1 || Math.abs(q[1]) > 1);
+
 /* 折线路径压缩：限制点数并转为 [lng, lat] 纯数组，控制存储体积、保证可序列化。
- * 兼容两种点格式：JS API 的 LngLat 对象（p.lng/p.lat）与 Web 服务代理的数组（p[0]/p[1]），
- * 否则数组点会被算成 NaN，经 JSON 存成 null，恢复后导致地图渲染崩溃 */
+ * 兼容两种点格式：JS API 的 LngLat 对象（p.lng/p.lat）与 Web 服务代理的数组（p[0]/p[1]）；
+ * 无效点（NaN/null/[0,0]）直接剔除，全部无效则返回 null（渲染退化为直线并由重查自愈） */
 function trimPath(path) {
   if (!path || !path.length) return null;
   const toPair = (p) => {
-    const x = Array.isArray(p) ? p[0] : p.lng;
-    const y = Array.isArray(p) ? p[1] : p.lat;
-    return [Math.round(x * 1e6) / 1e6, Math.round(y * 1e6) / 1e6];
+    const pt = [Array.isArray(p) ? p[0] : p.lng, Array.isArray(p) ? p[1] : p.lat];
+    return validRoutePoint(pt) ? [Math.round(pt[0] * 1e6) / 1e6, Math.round(pt[1] * 1e6) / 1e6] : null;
   };
-  if (path.length <= 200) return path.map(toPair);
-  const step = Math.ceil(path.length / 200);
+  const pts = path.map(toPair).filter(Boolean);
+  if (pts.length < 2) return null;
+  if (pts.length <= 200) return pts;
+  const step = Math.ceil(pts.length / 200);
   const out = [];
-  for (let i = 0; i < path.length; i += step) out.push(toPair(path[i]));
-  out.push(toPair(path[path.length - 1]));
+  for (let i = 0; i < pts.length; i += step) out.push(pts[i]);
+  out.push(pts[pts.length - 1]);
   return out;
 }
 
